@@ -1,0 +1,19 @@
+# 配布用パッケージ（tools/make_dist.py が作る）
+/dist/
+# Python が強制終了したときのコアダンプ（作業のフォルダに書かれる。コミットしない）
+core
+core.[0-9]*
+# テストで通らない行の記録（coverage）
+.coverage
+.coverage.*
+coverage.json
+htmlcov/
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+# uv のキャッシュと uv が入れる Python
+.cache/
+# Claude Code の個人の設定（「don't ask again」で保存される）
+.claude/settings.local.json

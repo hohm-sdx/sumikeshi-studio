@@ -1,0 +1,19 @@
+Third-party component of Qt 6.12.0 (qtbase), included in this package
+Name: Secure Hash Algorithm SHA-1
+Id: sha1
+Version: (not given)
+Homepage: http://www.dominik-reichl.de/projects/csha1/
+License: LicenseRef-SHA1-Public-Domain
+In this package: Qt6Core.dll
+Qt usage: Used in Qt Core (QCryptographicHash).
+
+Copyright:
+Copyright (C) Dominik Reichl <dominik.reichl@t-online.de>
+Copyright (C) 2016 The Qt Company Ltd
+
+==============================================================================
+LICENSES/LicenseRef-SHA1-Public-Domain.txt (from the Qt 6.12.0 source, qtbase)
+==============================================================================
+100% free public domain implementation of the SHA-1 algorithm
+by Dominik Reichl <dominik.reichl@t-online.de>
+Web: http://www.dominik-reichl.de/

@@ -1,0 +1,14 @@
+This additional permission applies to all files of Sumikeshi Studio ("this
+Program"), which is licensed under the GNU Affero General Public License
+version 3 (see LICENSE in the same folder as this file).
+
+Additional permission under GNU AGPL version 3 section 7
+
+If you modify this Program, or any covered work, by linking or combining
+it with the Microsoft Visual C++ Runtime (or a modified version of that
+library), containing parts covered by the terms of the Microsoft Software
+License Terms, or with OpenCV including the Intel(R) Integrated Performance
+Primitives (Intel(R) IPP) ICV library (or a modified version of that
+library), containing parts covered by the terms of the Intel Simplified
+Software License, the licensors of this Program grant you additional
+permission to convey the resulting work.

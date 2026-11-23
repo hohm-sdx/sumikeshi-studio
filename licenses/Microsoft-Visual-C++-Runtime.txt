@@ -1,0 +1,73 @@
+Microsoft Visual C++ Runtime
+
+This package contains files of the Microsoft Visual C++ Runtime ("Microsoft
+Distributable Code"), such as msvcp140*.dll and vcruntime140*.dll,
+copyrighted by Microsoft Corporation. They are included unmodified, as
+shipped in the distributions of the components in this package. The list of
+the files, their locations and the components they come from is in
+licenses\index.txt.
+
+The Microsoft Distributable Code is subject to Microsoft's license terms. By
+using this package, you agree that you will not:
+
+- alter any copyright, trademark or patent notice in the Microsoft
+  Distributable Code;
+- use Microsoft's trademarks in your programs' names or in a way that
+  suggests your programs come from or are endorsed by Microsoft;
+- distribute the Microsoft Distributable Code to run on a platform other
+  than Microsoft operating systems, run-time technologies or application
+  platforms;
+- include the Microsoft Distributable Code in malicious, deceptive or
+  unlawful programs;
+- modify or distribute the Microsoft Distributable Code so that any part of
+  it becomes subject to an Excluded License. An "Excluded License" is one
+  that requires, as a condition of use, modification or distribution of
+  code, that (i) it be disclosed or distributed in source code form; or
+  (ii) others have the right to modify it; or
+- modify the Microsoft Distributable Code, or distribute it other than as a
+  part of this package.
+
+If you distribute this package to others, you must require them to agree to
+terms that protect the Microsoft Distributable Code at least as much as these
+terms.
+
+These terms apply only to the Microsoft Distributable Code, not to the rest
+of this package.
+
+The Japanese translation below is provided for convenience. If the English
+text and the Japanese translation differ, the English text prevails.
+
+------------------------------------------------------------------------------
+（日本語訳）Microsoft Visual C++ のランタイム
+
+この一式には、Microsoft Corporation が著作権を持つ Microsoft Visual C++ の
+ランタイムのファイル（msvcp140*.dll、vcruntime140*.dll など。Microsoft の
+再配布可能なコード）が入っています。これらは、この一式の部品の配布物に入って
+いるものを、変えずに入れています。ファイルとその場所、どの部品から来たものかの
+一覧は、licenses\index.txt にあります。
+
+Microsoft の再配布可能なコードには、Microsoft のライセンスの条件が適用されます。
+この一式を使う人は、次のことをしないことに同意するものとします。
+
+- Microsoft の再配布可能なコードの著作権・商標・特許の表示を変えること
+- Microsoft の商標を、プログラムの名前に使うこと、または、プログラムが
+  Microsoft のものであるか Microsoft が推薦しているかのように使うこと
+- Microsoft の再配布可能なコードを、Microsoft のオペレーティングシステム・
+  ランタイムの技術・アプリケーションのプラットフォーム以外で動かすために配ること
+- Microsoft の再配布可能なコードを、悪意のある・人をだます・違法なプログラムに
+  入れること
+- Microsoft の再配布可能なコードを、その一部が除外ライセンスの対象になるように、
+  改変したり配ったりすること。「除外ライセンス」とは、コードを使う・改変する・
+  配る条件として、(i) コードをソースコードの形で開示するか配ること、または
+  (ii) 他者がコードを改変する権利を持つことを求めるライセンスをいいます
+- Microsoft の再配布可能なコードを変えること、またはこの一式の一部としてでなく
+  配ること
+
+この一式をほかの人に配るときは、配る相手に、これらの条件と同じ程度以上に
+Microsoft の再配布可能なコードを守る条件に同意させてください。
+
+これらの条件は Microsoft の再配布可能なコードにだけ適用され、この一式のほかの
+部分には適用されません。
+
+この日本語訳は、読みやすさのために付けたものです。英語の文と日本語訳が異なる
+ときは、英語の文を正とします。

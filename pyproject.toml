@@ -1,0 +1,77 @@
+[project]
+name = "sumikeshi-studio"
+version = "0.3.0"
+description = "スキャンした帳票の、様式で決めた欄を墨消しするツール"
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "LICENSE-EXCEPTION.txt"]
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "numpy==2.5.4",
+    "onnxruntime==1.31.0",
+    "opencv-python-headless==5.0.0.93",
+    "pillow==13.0.0",
+    # 解析のプロセスの数を決めるとき、空きメモリを読む（workers.process_count）
+    "psutil==7.2.2",
+    # PDF を開く・画像にする・作る。PyPI の pypdfium2 5.14.0 の PDFium（156.0.8076）には脆弱性の修正5件が入って
+    # いないため、pypdfium2 5.14.0 のソースと pdfium-binaries 8138 の PDFium で作った配布物を、wheels/ から入れる
+    # （下の [tool.uv.sources]）
+    "pypdfium2==5.14.0",
+    "pyside6-essentials==6.12.0",  # 画面の部品のうち QtCore・QtGui・QtWidgets を含むもの
+    "rapidocr==3.10.0",
+]
+
+[project.gui-scripts]
+sumikeshi-studio = "sumikeshi_studio.launcher:main"
+
+[dependency-groups]
+dev = [
+    # 出力した PDF を、作ったライブラリ（PDFium）と別のライブラリで読み直して確かめる（BSD-3-Clause）
+    "pypdf==6.21.4",
+    # テストで通らない行の一覧（Apache-2.0。下の [tool.coverage.run]）
+    "coverage==7.17.0",
+    # 配布用パッケージの .exe・.dll・.pyd の署名を確かめるときに使う、Microsoft の Trusted Root Program のルート証明書
+    # （MPL-2.0。tools/make_dist.py が使い、配布用パッケージには入らない）
+    "mscerts==2026.8.28",
+    "pytest==9.2.0",
+    # テストを並べて流す（全件を流すとき uv run pytest -n 4。MIT）
+    "pytest-xdist==3.8.0",
+    "ruff==0.17.3",
+]
+
+[tool.uv]
+# 開発の環境（Linux）と配布用パッケージ（Windows）だけを解決する。ほかの OS では、wheels/ の配布物がなく、PyPI の
+# pypdfium2（PDFium 156.0.8076）に落ちるため
+environments = ["sys_platform == 'win32'", "sys_platform == 'linux'"]
+
+[tool.uv.sources]
+# tools/build_pypdfium2.py で作った配布物（PDFium 159.0.8138.0）。uv.lock に SHA-256 が書かれる。PDFium のバージョンを
+# 上げるときは、tools/build_pypdfium2.py の定数（取得するものの URL・バージョン・SHA-256）を書き直して作り直し、wheels/ の
+# 配布物を差し替えて、ここのファイルの名前と、上の dependencies の pypdfium2 のバージョンを直し、uv lock と uv sync をする
+pypdfium2 = [
+    { path = "wheels/pypdfium2-5.14.0-py3-none-win_amd64.whl", marker = "sys_platform == 'win32'" },
+    { path = "wheels/pypdfium2-5.14.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", marker = "sys_platform == 'linux'" },
+]
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+markers = [
+    "regression: 結果が記録と変わっていないかを確かめる（数分かかる。uv run pytest -m regression）",
+]
+addopts = "-m 'not regression'"
+
+# テストで通らない行の一覧。uv run coverage run -m pytest … で流し、uv run coverage combine でまとめてから、
+# uv run coverage report で出す
+[tool.coverage.run]
+source_pkgs = ["sumikeshi_studio"]
+branch = true
+# xdist のワーカー、subprocess で起動するテスト、本物の解析のプロセス（multiprocessing の spawn）も測り、プロセスごとの
+# 記録を coverage combine でまとめる
+parallel = true
+patch = ["subprocess"]
+concurrency = ["thread", "multiprocessing"]

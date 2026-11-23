@@ -1,0 +1,44 @@
+# テストデータ
+
+自動テストが使う画像と PDF。**記入した番号・氏名・会社名・保険会社名は、すべて架空のもの**である。実在の人や会社の情報は含まない。
+
+## 元にしたもの
+
+- `公開様式_*`・`架空記入_*` は、Hideki Ohmura が、国税庁ホームページの公開様式（記入なし。`samples/` の直下にある PDF と同じもの。`2027bun_09` だけは `samples/` の直下に置いていない）を加工して作成した。国税庁が作成したものではない。これらの画像は、AGPL-3.0 の対象ではなく、国税庁ホームページの利用規約（公共データ利用規約（第1.0版）。https://www.nta.go.jp/chuijiko/copy.htm ）のもとで使える。出典：国税庁ホームページ。使った公開様式（PDF）は次のとおり。
+  - https://www.nta.go.jp/taxes/tetsuzuki/shinsei/annai/gensen/pdf/2025bun_01.pdf
+  - https://www.nta.go.jp/taxes/tetsuzuki/shinsei/annai/gensen/pdf/2026bun_01.pdf
+  - https://www.nta.go.jp/taxes/tetsuzuki/shinsei/annai/gensen/pdf/2027bun_01.pdf
+  - https://www.nta.go.jp/taxes/tetsuzuki/shinsei/annai/gensen/pdf/2026bun_04.pdf
+  - https://www.nta.go.jp/taxes/tetsuzuki/shinsei/annai/gensen/pdf/2026bun_06.pdf
+  - https://www.nta.go.jp/taxes/tetsuzuki/shinsei/annai/gensen/pdf/2026bun_08.pdf
+  - https://www.nta.go.jp/taxes/tetsuzuki/shinsei/annai/gensen/pdf/2027bun_09.pdf
+- `架空_控除証明書_*` は、控除証明書に見立てて作った架空の文書（実在の様式ではない）。
+- `試験_*.pdf` は、ツールの検査のために作った PDF。
+
+## 作り方と、テストでの使い方
+
+画像（`公開様式_*`・`架空記入_*`・`架空_控除証明書_*`）と、`試験_入力欄.pdf`・`試験_パスワード付き.pdf` は、PyMuPDF 2.1 を使って書き出した（この2つの PDF には ICC プロファイルが入っていない）。
+
+ほかの5つの `試験_*.pdf` は、`tools/make_test_pdfs.py` が PDF の構文を直接書いて作る（`uv run python tools/make_test_pdfs.py`）。画像の色空間は DeviceRGB で、ICC プロファイルを入れない。日時や識別子を書かないので、作るたびに同じものができる。`tests/test_make_test_pdfs.py` が、作り直したものとコミットされているものが同じことと、どの PDF にも ICC プロファイル（ICCBased の色空間と JPEG の中の ICC のデータ）がないことを確かめる。
+
+テストは、これらの画像に、傾け・ずらし・ぼかし・ノイズ・白黒2値にする処理を OpenCV と numpy で加え、手で書く PDF に貼って試験画像にする（`tests/scan.py`）。
+
+## ファイル
+
+| ファイル | 内容 |
+|---|---|
+| `公開様式_<様式>_200dpi_グレー.png` | 公開様式の1ページ目を、200dpi のグレーで描いたもの。グレーの試験画像と、傾けない参照の画像の元。様式は `2025bun_01`・`2026bun_01`・`2027bun_01`（扶養控除等（異動）申告書 令和7・8・9年分）、`2026bun_04`（保険料控除申告書 令和8年分）、`2026bun_06`（基礎控除申告書 兼 配偶者控除等申告書 兼 特定親族特別控除申告書 兼 所得金額調整控除申告書 令和8年分）、`2026bun_08`（従たる給与についての扶養控除等（異動）申告書 令和8年分） |
+| `公開様式_2027bun_09_200dpi_グレー.png` | 公的年金等の受給者の扶養親族等申告書 令和9年分（`2027bun_09`）の1ページ目を、200dpi のグレーで描いたもの。表の作りが扶養控除等申告書に似た別の帳票として、罫線の並びでの判別のテストに使う。この様式は 200dpi のグレーだけを置き、PDF は `samples/` の直下に置いていない。pypdfium2 で描いた（PDF の SHA-256 は `c249f4d70cb3e443c3436c8c2e740495a9be548b48abd7aaef33b4a7adb6bf95`） |
+| `公開様式_<様式>_300dpi_グレー.png` | 同じく 300dpi のグレー。白黒2値の試験画像の元 |
+| `公開様式_<様式>_232dpi_カラー.png` | 同じく 232dpi のカラー（RGB）。カラーの JPEG の試験画像の元 |
+| `架空記入_2027bun_01_200dpi_グレー.png` | 扶養控除等申告書 令和9年分の、本人・配偶者・扶養親族の個人番号欄6か所に架空の番号「123412341234」を、支払者の欄に架空の法人番号「9876543210987」を書いて、200dpi のグレーで描いたもの |
+| `架空_控除証明書_<種類>_200dpi_グレー.png` | 架空の控除証明書（生命保険・地震保険・国民年金。題名は `tests/scan.py` の `CERTIFICATES`）を、200dpi のグレーで描いたもの。日本語の文字は、日本語のフォントのファイルがないと書けないため、画像で残す |
+| `試験_画像1枚.pdf` | A4 のページに、1000×1400画素の JPEG を1枚貼っただけの PDF |
+| `試験_FormXObject縮小.pdf` | `試験_画像1枚.pdf` のページを、Form XObject として半分の大きさで貼った PDF |
+| `試験_回転90.pdf` | `試験_画像1枚.pdf` のページに /Rotate 90 を付けた PDF |
+| `試験_相互参照ストリーム.pdf` | `試験_画像1枚.pdf` を、オブジェクトストリームと相互参照ストリームで保存し直した PDF |
+| `試験_入力欄.pdf` | 値「1234」を入れた入力欄が1つある PDF |
+| `試験_パスワード付き.pdf` | 開くのにパスワードが要る PDF（AES-256） |
+| `試験_文字のデータ9種類.pdf` | 小さな画像を貼ったページに、目印の文字列「SECRET1234」を、見えない文字・注釈・入力欄・文書の情報・XMP・しおり・添付ファイル・OpenAction（JavaScript）に入れた PDF |
+
+数字だけを書いた試験画像（保険料控除申告書のずれの修正の評価に使うもの）は、ここには入れず、テストのときに pypdfium2 の標準のフォントで書く。

@@ -1,0 +1,66 @@
+# 配布用パッケージに入る依存先が自分では持っていないライセンスの全文と、その対象の対応表。依存先の配布物にある全文は、バージョンを
+# 上げるたびに古くならないよう、ここには置かず、tools/make_dist.py が配布用パッケージを作るときに配布物からコピーする。
+# 1行に「全文のファイル（licenses/ からの位置）<TAB>対象」を書く。対象は、配布用パッケージに入る配布物の名前（dist-info の
+# Name）か、配布用パッケージの中のファイルの型（配布用パッケージのフォルダからの位置。/ を含むもの）。1つの全文に、行を2つ以上書いてよい。
+# tools/make_dist.py がこの表を読み、配布用パッケージの licenses を作る。対応表に行のない全文、ライセンスのファイルも対応表の
+# 行もない配布物、対象が配布用パッケージに1つもない全文、ファイルの型のどれにも当てはまらない Visual C++ のランタイムがあれば、
+# 配布用パッケージを作るのを止める。
+# PySide6・shiboken6 は LGPL-3.0 のもとで使う。LGPL-3.0 は GPL-3.0 の全文を添えることを求める
+GPL-3.0.txt	PySide6_Essentials
+GPL-3.0.txt	shiboken6
+LGPL-3.0.txt	PySide6_Essentials
+LGPL-3.0.txt	shiboken6
+# flatbuffers（Apache-2.0）の配布物には、ライセンスのファイルがない
+Apache-2.0.txt	flatbuffers
+# 配布用パッケージに残す Qt の DLL（tools/make_dist.py の PYSIDE_KEEP）に入っている、Qt 6.12.0 の qtbase の第三者の部品（qt_attribution.json から作った）
+qt/blake2.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/doubleconversion.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/easing.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/md4.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/md5.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/pcre2.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/pcre2-sljit.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/rfc6234.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/sha1.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/sha3_endian.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/sha3_keccak.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/siphash.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/tinycbor.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/zlib.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/tlexpected.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/tika-mimetypes.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/unicode-character-database.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/unicode-cldr.txt	python/Lib/site-packages/PySide6/Qt6Core.dll
+qt/freetype.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/freetype-zlib.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/freetype-bdf.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/freetype-pcf.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/grayraster.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/harfbuzz-ng.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/emoji-segmenter.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/icc-srgb-color-profile.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/libpng.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/md4c.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/d3d12memoryallocator.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/rhi-miniengine-d3d12-mipmap.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/vulkanmemoryallocator.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/vulkan-xml-spec.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/opengl-headers.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/opengl-headers.txt	python/Lib/site-packages/PySide6/plugins/platforms/qwindows.dll
+qt/opengl-es2-headers.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/opengl-es2-headers.txt	python/Lib/site-packages/PySide6/plugins/platforms/qwindows.dll
+qt/smooth-scaling-algorithm.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/xserverhelper.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/aglfn.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/xsvg.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/webgradients.txt	python/Lib/site-packages/PySide6/Qt6Gui.dll
+qt/psl-data.txt	python/Lib/site-packages/PySide6/Qt6Network.dll
+qt/libpsl.txt	python/Lib/site-packages/PySide6/Qt6Network.dll
+qt/wintab.txt	python/Lib/site-packages/PySide6/plugins/platforms/qwindows.dll
+# Microsoft Visual C++ のランタイムの DLL の条件。配布用パッケージの中のランタイムの DLL を全部対象にする
+Microsoft-Visual-C++-Runtime.txt	python/msvcp140*.dll
+Microsoft-Visual-C++-Runtime.txt	python/vcruntime140*.dll
+Microsoft-Visual-C++-Runtime.txt	python/Lib/site-packages/PySide6/*140*.dll
+Microsoft-Visual-C++-Runtime.txt	python/Lib/site-packages/shiboken6/*140*.dll
+Microsoft-Visual-C++-Runtime.txt	python/Lib/site-packages/numpy.libs/msvcp140-*.dll
+Microsoft-Visual-C++-Runtime.txt	python/Lib/site-packages/shapely.libs/msvcp140-*.dll

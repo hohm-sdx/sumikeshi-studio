@@ -1,0 +1,7 @@
+# 作った pypdfium2 の配布物（tools/build_pypdfium2.py。改行を変えず、差分も出さない）
+wheels/*.whl -text -diff
+# .bat は Windows で実行するため CRLF を維持する（この行がないと、windows/ の .bat が LF で取り出され、
+# 配布用パッケージにも LF の .bat が入る）
+*.bat text eol=crlf
+# README の先頭に表示するデモの動画（アニメーションの WebP。改行を変えず、差分も出さない）
+*.webp binary

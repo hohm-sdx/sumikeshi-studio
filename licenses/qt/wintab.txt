@@ -1,0 +1,17 @@
+Third-party component of Qt 6.12.0 (qtbase), included in this package
+Name: Wintab API
+Id: wintab
+Version: (not given)
+Homepage: (not given)
+License: LicenseRef-Lcs-Telegraphics
+In this package: qwindows.dll
+Qt usage: Used in the Qt platform plugin for Windows. Configure with -no-feature-tabletevent to avoid.
+
+Copyright:
+Copyright 1991-1998 by LCS/Telegraphics.
+
+==============================================================================
+LICENSES/LicenseRef-Lcs-Telegraphics.txt (from the Qt 6.12.0 source, qtbase)
+==============================================================================
+The text and information contained in this file may be freely used,
+copied, or distributed without compensation or licensing restrictions.
