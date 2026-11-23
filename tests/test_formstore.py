@@ -5,6 +5,8 @@
 import dataclasses
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from userforms import (
@@ -22,6 +24,18 @@ from sumikeshi_studio.formstore import FolderChoice
 
 def load(folder):
     return formstore.load(FolderChoice(folder, formstore.ORIGIN_USER))
+
+
+def load_with_stack(folder, stack_bytes):
+    """スタックの大きさを決めたスレッドで読む。Python 3.14 は、json.loads などが入れ子を読める深さを、そのスレッドの
+    スタックの大きさから決めるので、主スレッドで読むと、環境のスタックの上限（ulimit -s）で結果が変わる"""
+    old = threading.stack_size(stack_bytes)
+    try:
+        with ThreadPoolExecutor(1) as pool:
+            future = pool.submit(load, folder)
+    finally:
+        threading.stack_size(old)
+    return future.result()
 
 
 def test_bundled_forms_are_read_from_forms_folder(tmp_path):
@@ -620,7 +634,8 @@ def _spec_text(form_id: str, **change) -> str:
 
 def test_broken_json_is_one_unreadable_form(tmp_path):
     """壊れた .json は、その様式だけを読めない様式にし、ほかの様式は読む。入れ子の深い .json・長い整数・NaN・
-    Infinity・用紙の外の範囲・制御文字の名前・大きすぎるファイルも、読めない様式にする"""
+    Infinity・用紙の外の範囲・制御文字の名前・大きすぎるファイルも、読めない様式にする。入れ子の深い .json は、
+    スタックが2MBのスレッドで読み、入れ子を読める深さ（約1万6千段）を超えて RecursionError になるようにする"""
     hoken = bundled("nta-hoken-r8")
     f0 = hoken.fields[0]
     rect = [f0.x, f0.y, f0.w, f0.h]
@@ -643,7 +658,7 @@ def test_broken_json_is_one_unreadable_form(tmp_path):
         (tmp_path / f"{form_id}.json").write_text(text, encoding="utf-8")
         (tmp_path / f"{form_id}-r1.png").write_bytes(hoken.image_path().read_bytes())
     write_form(tmp_path, "u-good", "読める様式")
-    loaded = load(tmp_path)
+    loaded = load_with_stack(tmp_path, 2 * 1024**2)
     reasons = {p.form_id: p.reason for p in loaded.problems}
     assert reasons == {
         "u-deep": "ファイルを読めません（RecursionError）",
