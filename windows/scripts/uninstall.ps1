@@ -163,7 +163,7 @@ function Remove-Program([string]$Dir, [string]$Hive, [string]$Desktop, [string]$
     $Old = "$Dir.old"
     if (Test-Path -LiteralPath $Old) { Remove-Item -LiteralPath $Old -Recurse -Force }
     try { Rename-Item -LiteralPath $Dir -NewName (Split-Path $Old -Leaf) } catch {
-        Write-Host ((Msg "導入先（{0}）のファイルが使われているため、中止しました。ツールやエクスプローラーなど、そのフォルダのファイルを開いているものを閉じてから、もう一度実行してください。" "Stopped because files in {0} are in use. Close the tool and anything else that has files in that folder open, and then run this again.") -f $Dir)
+        Write-Host ((Msg "インストール先（{0}）のファイルが使われているため、中止しました。ツールやエクスプローラーなど、そのフォルダのファイルを開いているものを閉じてから、もう一度実行してください。" "Stopped because files in {0} are in use. Close the tool and anything else that has files in that folder open, and then run this again.") -f $Dir)
         return $false
     }
     foreach ($Folder in @($Desktop, $Programs)) {
@@ -185,7 +185,7 @@ function Invoke-Main {
     if (Test-SamePath $Here $AllUsersDir) { $AllUsers = $true }
     elseif ((-not $Elevated) -and (Test-SamePath $Here $PerUserDir)) { $AllUsers = $false }
     else {
-        Write-Host ((Msg "このスクリプトは、導入した場所（{0} か {1}）にないため、アンインストールしません。" "This script is not in an installation folder ({0} or {1}), so nothing is uninstalled.") -f $PerUserDir, $AllUsersDir)
+        Write-Host ((Msg "このスクリプトは、インストールした場所（{0} か {1}）にないため、アンインストールしません。" "This script is not in an installation folder ({0} or {1}), so nothing is uninstalled.") -f $PerUserDir, $AllUsersDir)
         return
     }
     if ($Elevated) {

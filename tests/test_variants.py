@@ -847,7 +847,7 @@ def test_pipeline_places_ranges_on_unknown_variant_page(tmp_path, monkeypatch):
     img, truth = warped("2026bun_04", "nta-hoken-r8")
     path = tmp_path / "page.png"
     Image.fromarray(img).save(path, dpi=(200, 200))
-    # 字の形が違って位置合わせが成り立たない用紙（給与ソフトの用紙など）に見立てる。向きは OCR で決め（よく通る道）、
+    # 字の形が違って位置合わせが成り立たない用紙（様式のバリエーション）に見立てる。向きは OCR で決め（よく通る道）、
     # 見本と位置合わせし直さずに罫線を調べる
     monkeypatch.setattr(align, "upright_group", lambda *a, **k: None)
     res = pipeline.analyze(imaging.open_pages(path)[0], formset=bundled_forms())

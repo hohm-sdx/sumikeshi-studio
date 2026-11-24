@@ -156,7 +156,7 @@ def test_unreachable_chosen_folder_is_not_created(tmp_path):
         "FileNotFoundError: "
     )
     assert text.endswith(
-        "）。導入は続けます。そのフォルダにつながる状態で様式がなければ、起動の画面の「サンプルの様式を入れる」で"
+        "）。インストールは続けます。そのフォルダにつながる状態で様式がなければ、起動の画面の「サンプルの様式を入れる」で"
         "入れられます。"
     )
     assert not (tmp_path / "共有").exists()
@@ -172,7 +172,7 @@ def test_unreadable_default_folder(tmp_path):
     assert text.startswith(
         f"既定の様式のフォルダ（{folder}）を読めないため、サンプルの様式は入れませんでした（NotADirectoryError: "
     )
-    assert text.endswith("）。導入は続けます。")
+    assert text.endswith("）。インストールは続けます。")
 
 
 def test_failure_on_the_way_leaves_no_form(tmp_path, monkeypatch):
@@ -193,7 +193,7 @@ def test_failure_on_the_way_leaves_no_form(tmp_path, monkeypatch):
     assert said == [
         (
             "サンプルの様式を入れられませんでした（PermissionError: アクセスが拒否されました）。途中まで入れた"
-            "様式は削除しました。導入は続けます。"
+            "様式は削除しました。インストールは続けます。"
         )
     ]
     assert not formstore.has_forms(tmp_path)

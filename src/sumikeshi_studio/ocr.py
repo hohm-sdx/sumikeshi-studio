@@ -103,7 +103,7 @@ MODELS = {
     "Rec": "PP-OCRv6_rec_small.onnx",
 }
 MISSING_MODEL = (
-    "OCR のモデルのファイルがありません（{path}）。ツールを導入し直してください。"
+    "OCR のモデルのファイルがありません（{path}）。ツールをインストールし直してください。"
 )
 
 

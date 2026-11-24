@@ -44,7 +44,7 @@ EN: dict[str | tuple[str, str], str | tuple[str, str]] = {
         "This record may help investigate the cause."
     ),
     # ---- ocr
-    "OCR のモデルのファイルがありません（{path}）。ツールを導入し直してください。": (
+    "OCR のモデルのファイルがありません（{path}）。ツールをインストールし直してください。": (
         "The OCR model file is missing ({path}). Reinstall the tool."
     ),
     # ---- formstore（様式の情報と、読めない様式の理由）
@@ -807,17 +807,17 @@ EN: dict[str | tuple[str, str], str | tuple[str, str]] = {
         "being asked."
     ),
     "起動の画面で選んだ様式のフォルダ（{folder}）に届かないため、サンプルの様式は入れませんでした（{error}）。"
-    "導入は続けます。そのフォルダにつながる状態で様式がなければ、起動の画面の「サンプルの様式を入れる」で"
+    "インストールは続けます。そのフォルダにつながる状態で様式がなければ、起動の画面の「サンプルの様式を入れる」で"
     "入れられます。": (
         "The sample forms were not added because the forms folder selected on the start screen ({folder}) could "
         "not be reached ({error}). Setup continues. When the folder can be reached and has no forms, you can add "
         'them with "Add sample forms" on the start screen.'
     ),
-    "既定の様式のフォルダ（{folder}）を読めないため、サンプルの様式は入れませんでした（{error}）。導入は続けます。": (
+    "既定の様式のフォルダ（{folder}）を読めないため、サンプルの様式は入れませんでした（{error}）。インストールは続けます。": (
         "The sample forms were not added because the default forms folder ({folder}) could not be read ({error}). "
         "Setup continues."
     ),
-    "サンプルの様式を入れられませんでした（{error}）。途中まで入れた様式は削除しました。導入は続けます。": (
+    "サンプルの様式を入れられませんでした（{error}）。途中まで入れた様式は削除しました。インストールは続けます。": (
         "Could not add the sample forms ({error}). The forms that had been added were deleted. Setup continues."
     ),
     "引数（{arguments}）が決まりに合わないため、サンプルの様式は入れませんでした。--samples は y か n にしてください。": (

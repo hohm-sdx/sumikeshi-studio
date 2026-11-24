@@ -146,7 +146,7 @@ function Install-Files([string]$Dir, [bool]$Move) {
     if ($Move) {
         if (Test-Path -LiteralPath $Dir) {
             try { Rename-Item -LiteralPath $Dir -NewName (Split-Path $Old -Leaf) } catch {
-                Write-Host ((Msg "導入先（{0}）のファイルが使われているため、中止しました。ツールやエクスプローラーなど、そのフォルダのファイルを開いているものを閉じてから、もう一度実行してください。" "Stopped because files in {0} are in use. Close the tool and anything else that has files in that folder open, and then run this again.") -f $Dir)
+                Write-Host ((Msg "インストール先（{0}）のファイルが使われているため、中止しました。ツールやエクスプローラーなど、そのフォルダのファイルを開いているものを閉じてから、もう一度実行してください。" "Stopped because files in {0} are in use. Close the tool and anything else that has files in that folder open, and then run this again.") -f $Dir)
                 return $false
             }
         }
@@ -155,14 +155,14 @@ function Install-Files([string]$Dir, [bool]$Move) {
             return $true
         } catch {
             if (Test-Path -LiteralPath $Old) { Rename-Item -LiteralPath $Old -NewName (Split-Path $Dir -Leaf) }
-            Write-Host ((Msg "導入先（{0}）にコピーしています…" "Copying the files to {0}…") -f $Dir)
+            Write-Host ((Msg "インストール先（{0}）にコピーしています…" "Copying the files to {0}…") -f $Dir)
         }
     }
     Copy-Item -LiteralPath $Source -Destination $New -Recurse
     if (Test-Path -LiteralPath $Dir) {
         try { Rename-Item -LiteralPath $Dir -NewName (Split-Path $Old -Leaf) } catch {
             Remove-Item -LiteralPath $New -Recurse -Force
-            Write-Host ((Msg "導入先（{0}）のファイルが使われているため、中止しました。ツールやエクスプローラーなど、そのフォルダのファイルを開いているものを閉じてから、もう一度実行してください。" "Stopped because files in {0} are in use. Close the tool and anything else that has files in that folder open, and then run this again.") -f $Dir)
+            Write-Host ((Msg "インストール先（{0}）のファイルが使われているため、中止しました。ツールやエクスプローラーなど、そのフォルダのファイルを開いているものを閉じてから、もう一度実行してください。" "Stopped because files in {0} are in use. Close the tool and anything else that has files in that folder open, and then run this again.") -f $Dir)
             return $false
         }
     }
@@ -243,7 +243,7 @@ function Show-Running([string[]]$Users) {
 
 function Remove-Old([string]$Dir) {
     try { if (Test-Path -LiteralPath "$Dir.old") { Remove-Item -LiteralPath "$Dir.old" -Recurse -Force } } catch {
-        Write-Host ((Msg "前の導入のフォルダ（{0}）を削除できませんでした。手で削除してください。" "Could not delete the folder of the previous installation ({0}). Delete it manually.") -f "$Dir.old")
+        Write-Host ((Msg "前のインストールのフォルダ（{0}）を削除できませんでした。手で削除してください。" "Could not delete the folder of the previous installation ({0}). Delete it manually.") -f "$Dir.old")
     }
 }
 
@@ -256,7 +256,7 @@ function Install-PerUser([string]$Version) {
     Show-Update (Get-InstalledVersion "HKCU") $Version
     # 同じドライブなら移動、別のドライブ（UNC パスを含む）ならコピーして元を消す
     $Move = (-not $Source.StartsWith("\\")) -and ([IO.Path]::GetPathRoot($Source) -eq [IO.Path]::GetPathRoot($Dir))
-    if ($Move) { Write-Host ((Msg "導入先（{0}）に移しています…" "Moving the files to {0}…") -f $Dir) } else { Write-Host ((Msg "導入先（{0}）にコピーしています…" "Copying the files to {0}…") -f $Dir) }
+    if ($Move) { Write-Host ((Msg "インストール先（{0}）に移しています…" "Moving the files to {0}…") -f $Dir) } else { Write-Host ((Msg "インストール先（{0}）にコピーしています…" "Copying the files to {0}…") -f $Dir) }
     if (-not (Install-Files $Dir $Move)) { return }
     Invoke-Compile $Dir
     Register-App "HKCU" $Dir (WinMsg "墨消しスタジオ" "Sumikeshi Studio") $Version
@@ -266,14 +266,14 @@ function Install-PerUser([string]$Version) {
     $FormArguments = @("-I", "-m", "sumikeshi_studio.forminstall", "--years")
     if ($Samples) { $FormArguments += @("--samples", $Samples.ToLower()) }
     $Code = Invoke-Python (Join-Path $Dir "python\python.exe") $FormArguments
-    if ($Code -ne 0) { Write-Host ((Msg "サンプルの様式を入れる処理が、終了の番号 {0} で終わりました。導入は続けます。" "The step that adds the sample forms ended with exit code {0}. Setup continues.") -f $Code) }
+    if ($Code -ne 0) { Write-Host ((Msg "サンプルの様式を入れる処理が、終了の番号 {0} で終わりました。インストールは続けます。" "The step that adds the sample forms ended with exit code {0}. Setup continues.") -f $Code) }
     Remove-Old $Dir
     if (Test-Path -LiteralPath $Source) {
         try { Remove-Item -LiteralPath $Source -Recurse -Force } catch {
             Write-Host ((Msg "展開したフォルダ（{0}）を削除できませんでした。手で削除してください。" "Could not delete the extracted folder ({0}). Delete it manually.") -f $Source)
         }
     }
-    Write-Host ((Msg "導入しました（{0}）。スタートメニューとデスクトップの「{1}」から起動できます。" "Installed in {0}. Start the tool from `"{1}`" on the Start menu or the desktop.") -f $Dir, $AppName)
+    Write-Host ((Msg "インストールしました（{0}）。スタートメニューとデスクトップの「{1}」から起動できます。" "Installed in {0}. Start the tool from `"{1}`" on the Start menu or the desktop.") -f $Dir, $AppName)
     # 前の形で使っていたフォルダに新しい ZIP を展開し直して実行したときは、そのフォルダがいま移した（か消した）展開した
     # フォルダなので、もうないフォルダを示さない
     if ($Previous -and (Test-Path -LiteralPath $Previous)) { Write-Host ((Msg "前のデスクトップのショートカットは、{0} を指していました。そのフォルダはもう使わないので、削除してかまいません。" "The previous desktop shortcut pointed to {0}. That folder is no longer used, and you can delete it.") -f $Previous) }
@@ -288,7 +288,7 @@ function Install-AllUsers([string]$Version) {
     if ($Users.Count -gt 0) { Show-Running $Users; return }
     Show-Update (Get-InstalledVersion "HKLM") $Version
     # 移動せずにコピーする（新しく書いたファイルは、Program Files の権限を引き継ぐため）
-    Write-Host ((Msg "導入先（{0}）にコピーしています…" "Copying the files to {0}…") -f $Dir)
+    Write-Host ((Msg "インストール先（{0}）にコピーしています…" "Copying the files to {0}…") -f $Dir)
     if (-not (Install-Files $Dir $false)) { return }
     Invoke-Compile $Dir
     Register-App "HKLM" $Dir (WinMsg "墨消しスタジオ（すべてのユーザー）" "Sumikeshi Studio (all users)") $Version
@@ -312,7 +312,7 @@ function Invoke-Main {
     if (-not (Test-Choice "WindowsLanguage" $WindowsLanguage @("ja", "en"))) { return }
     # 導入したフォルダの中から実行すると、移すものと入れる先が重なり、入れたばかりのフォルダを消すおそれがある
     if (Get-InstalledFolder $Source) {
-        Write-Host ((Msg "導入したフォルダ（{0}）の中からは、導入できません。配布用パッケージの ZIP を展開したフォルダの setup.bat を実行してください。" "Setup cannot be run from the installed folder ({0}). Run setup.bat in the folder where you extracted the ZIP of the package.") -f $Source)
+        Write-Host ((Msg "インストールしたフォルダ（{0}）の中からは、インストールできません。配布用パッケージの ZIP を展開したフォルダの setup.bat を実行してください。" "Setup cannot be run from the installed folder ({0}). Run setup.bat in the folder where you extracted the ZIP of the package.") -f $Source)
         return
     }
     $Python = Join-Path $Source "python\python.exe"
@@ -341,11 +341,11 @@ function Invoke-Main {
     Write-Host (Msg "ツールの部品を読み込めるかを確かめています…" "Checking that the components of the tool can be loaded…")
     $Code = Invoke-Python $Python @("-I", "-B", "-m", "sumikeshi_studio.nativecheck")
     if ($Code -eq 20) { return }
-    if ($Code -ne 0 -and $Code -ne 10) { Write-Host ((Msg "部品を確かめられませんでした（終了の番号 {0}）。導入は続けます。" "Could not check the components (exit code {0}). Setup continues.") -f $Code) }
+    if ($Code -ne 0 -and $Code -ne 10) { Write-Host ((Msg "部品を確かめられませんでした（終了の番号 {0}）。インストールは続けます。" "Could not check the components (exit code {0}). Setup continues.") -f $Code) }
 
     $Choice = $Kind
     while ($Choice -notin @("1", "2")) {
-        Write-Host (Msg "導入の種類を選んでください。" "Choose the type of installation.")
+        Write-Host (Msg "インストールの種類を選んでください。" "Choose the type of installation.")
         Write-Host (Msg "  1：自分だけ（このアカウントだけが使えます。管理者権限は要りません）" "  1: Just for me (only this account can use it; no administrator rights needed)")
         Write-Host (Msg "  2：この PC のすべてのユーザー（管理者権限が要ります）" "  2: All users of this PC (administrator rights needed)")
         $Choice = (Read-Host (Msg "1 か 2 を入力して Enter を押してください（何も入力せずに Enter を押すと 1 になります）。[1/2]" "Type 1 or 2 and press Enter (pressing Enter alone chooses 1). [1/2]")).Normalize([Text.NormalizationForm]::FormKC).Trim()
@@ -353,25 +353,25 @@ function Invoke-Main {
     }
     if ($Choice -eq "1") {
         if (Test-Elevated) {
-            Write-Host (Msg "管理者として実行されているため、自分だけの導入はできません。setup.bat を、右クリックの「管理者として実行」でなく、ダブルクリックで実行してください。" "Just-for-me installation cannot be done because setup is running as administrator. Run setup.bat by double-clicking it, not with `"Run as administrator`".")
+            Write-Host (Msg "管理者として実行されているため、自分だけのインストールはできません。setup.bat を、右クリックの「管理者として実行」でなく、ダブルクリックで実行してください。" "Just-for-me installation cannot be done because setup is running as administrator. Run setup.bat by double-clicking it, not with `"Run as administrator`".")
             return
         }
         if ((Test-Path "HKLM:\$UninstallKey") -or (Test-Path -LiteralPath $AllUsersDir)) {
-            Write-Host ((Msg "この PC には、すべてのユーザー向けの墨消しスタジオがあります（{0}）。自分だけの導入はしません。すべてのユーザー向けのものを使ってください。" "Sumikeshi Studio for all users is already installed on this PC ({0}). Just-for-me installation is not done. Use the installation for all users.") -f $AllUsersDir)
+            Write-Host ((Msg "この PC には、すべてのユーザー向けの墨消しスタジオがあります（{0}）。自分だけのインストールはしません。すべてのユーザー向けのものを使ってください。" "Sumikeshi Studio for all users is already installed on this PC ({0}). Just-for-me installation is not done. Use the installation for all users.") -f $AllUsersDir)
             return
         }
         Install-PerUser $Version
         return
     }
     if ((Test-Path "HKCU:\$UninstallKey") -or (Test-Path -LiteralPath $PerUserDir)) {
-        Write-Host ((Msg "このアカウントには、自分だけの墨消しスタジオがあります（{0}）。すべてのユーザー向けに導入する前に、「インストールされているアプリ」から、自分だけのものをアンインストールしてください。" "Sumikeshi Studio is installed just for this account ({0}). Before installing for all users, uninstall it from `"Installed apps`".") -f $PerUserDir)
+        Write-Host ((Msg "このアカウントには、自分だけの墨消しスタジオがあります（{0}）。すべてのユーザー向けにインストールする前に、「インストールされているアプリ」から、自分だけのものをアンインストールしてください。" "Sumikeshi Studio is installed just for this account ({0}). Before installing for all users, uninstall it from `"Installed apps`".") -f $PerUserDir)
         return
     }
     if (Test-Elevated) { Install-AllUsers $Version } else {
         # 割り当てたネットワークのドライブはログオン セッションごとにあり、管理者権限のプロセス（UAC で入力した別の
         # アカウントや、別のログオン セッション）からは見えないことがある
         if (Test-NetworkPath $Source) {
-            Write-Host (Msg "ネットワーク上のフォルダからは、すべてのユーザー向けに導入できません（管理者権限では、ネットワークのドライブを読めないことがあるため）。ダウンロードなど、この PC の中のフォルダに ZIP を展開してから、もう一度実行してください。" "Setup for all users cannot be run from a network folder (the network drive may not be readable with administrator rights). Extract the ZIP to a folder on this PC, such as Downloads, and then run this again.")
+            Write-Host (Msg "ネットワーク上のフォルダからは、すべてのユーザー向けにインストールできません（管理者権限では、ネットワークのドライブを読めないことがあるため）。ダウンロードなど、この PC の中のフォルダに ZIP を展開してから、もう一度実行してください。" "Setup for all users cannot be run from a network folder (the network drive may not be readable with administrator rights). Extract the ZIP to a folder on this PC, such as Downloads, and then run this again.")
             return
         }
         Write-Host (Msg "管理者権限で続けます。表示される確認で「はい」を押すか、管理者のアカウントのパスワードを入力してください。" "Continuing with administrator rights. In the prompt that appears, click Yes or enter the password of an administrator account.")
@@ -381,16 +381,16 @@ function Invoke-Main {
         try {
             $Process = Start-Process -FilePath "powershell.exe" -ArgumentList $Arguments -Verb RunAs -Wait -PassThru
         } catch {
-            Write-Host (Msg "管理者権限での実行が取り消されたため、導入しませんでした。" "Setup was not done because running with administrator rights was canceled.")
+            Write-Host (Msg "管理者権限での実行が取り消されたため、インストールしませんでした。" "Setup was not done because running with administrator rights was canceled.")
             return
         }
         $script:ExitCode = $Process.ExitCode
         if ($script:ExitCode -ne 0) {
-            Write-Host ((Msg "すべてのユーザー向けの導入は、最後まで終わりませんでした（終了の番号 {0}）。管理者権限のウィンドウに出た文を確かめてください。" "Setup for all users did not finish (exit code {0}). Check the messages in the administrator window.") -f $script:ExitCode)
+            Write-Host ((Msg "すべてのユーザー向けのインストールは、最後まで終わりませんでした（終了の番号 {0}）。管理者権限のウィンドウに出た文を確かめてください。" "Setup for all users did not finish (exit code {0}). Check the messages in the administrator window.") -f $script:ExitCode)
         }
     }
     if ($script:ExitCode -ne 0) { return }
-    Write-Host ((Msg "この PC のすべてのユーザー向けに導入しました（{0}）。各ユーザーが最初に起動したときに、サンプルの様式を入れるかを尋ねます。展開したフォルダ（{1}）は、削除してかまいません。" "Installed for all users of this PC in {0}. When each user starts the tool for the first time, it asks whether to add the sample forms. You can delete the extracted folder ({1}).") -f $AllUsersDir, $Source)
+    Write-Host ((Msg "この PC のすべてのユーザー向けにインストールしました（{0}）。各ユーザーが最初に起動したときに、サンプルの様式を入れるかを尋ねます。展開したフォルダ（{1}）は、削除してかまいません。" "Installed for all users of this PC in {0}. When each user starts the tool for the first time, it asks whether to add the sample forms. You can delete the extracted folder ({1}).") -f $AllUsersDir, $Source)
 }
 
 # 終了の番号。導入が最後まで済んだときだけ 0 にする。Invoke-Main の出力は取り込まない（Python の出力が画面に出るように）
@@ -398,7 +398,7 @@ $script:ExitCode = 1
 try {
     Invoke-Main
 } catch {
-    Write-Host ((Msg "導入の途中で、思わぬエラーが起きました（{0}）。{1}" "An unexpected error occurred during setup ({0}). {1}") -f $_.Exception.Message, $Tell)
+    Write-Host ((Msg "インストールの途中で、思わぬエラーが起きました（{0}）。{1}" "An unexpected error occurred during setup ({0}). {1}") -f $_.Exception.Message, $Tell)
 } finally {
     if (-not $NoWait) {
         Write-Host ""

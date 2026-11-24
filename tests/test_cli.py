@@ -276,7 +276,7 @@ def test_match_columns_and_variant_page(
     assert re.fullmatch(r"1: 0\.\d\d/0\.\d\d", row["Line match"])
     path = tmp_path / "in" / "variant.png"
     Image.fromarray(img).save(path, dpi=(200, 200))
-    # 字の形が違って位置合わせが成り立たない用紙（給与ソフトの用紙など）に見立てる
+    # 字の形が違って位置合わせが成り立たない用紙（様式のバリエーション）に見立てる
     monkeypatch.setattr(align, "upright_group", lambda *a, **k: None)
     code, lines, _ = run(capsys, path, "--out", out, "--forms", forms)
     assert code == 0 and (out / "variant_redacted.pdf").exists()

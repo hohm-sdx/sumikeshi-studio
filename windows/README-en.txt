@@ -106,10 +106,10 @@ If the forms folder is a shared folder, updating the form on one PC makes all PC
 
 == Variations of a form
 Sheets whose fields are in the same order as the sample image of a form but whose row heights, column widths, or
-typeface differ (variations of a form, such as declarations printed by payroll software) cannot be identified by
-aligning them with the sample image. For such pages, the tool finds the fields from the order of the ruled lines of
-the sample image, places the areas, and marks the page "⚠ Review" with a message that the sheet is a variation of the
-form. Check that the areas match the fields, and correct the areas if they are off.
+typeface differ (variations of a form) cannot be identified by aligning them with the sample image. For such pages,
+the tool finds the fields from the order of the ruled lines of the sample image, places the areas, and marks the page
+"⚠ Review" with a message that the sheet is a variation of the form. Check that the areas match the fields, and
+correct the areas if they are off.
 The condition for identifying a variation (the minimum line match) can be changed for each form. On the forms screen,
 select the form, click "Edit", move the slider under "Variations of this form" in the right column of the area
 editor, and save. Raise it if other documents are identified as that form, and lower it if sheets of that form become
@@ -155,7 +155,7 @@ the path contains a space).
 
 == Updating to a new version
 The latest package is on the Releases page of the public repository
-(https://github.com/hohm-sdx/sumikeshi-studio/releases). There is no commitment to when a new package is released.
+(https://github.com/hohm-sdx/sumikeshi-studio/releases).
 1. Close the tool. In an installation for all users, ask the other users of this PC to close it too (if a user left it
    running while signed in, the update is stopped).
 2. If you downloaded the new ZIP from the Internet, unblock it before extracting it (step 1 of "Setup").
