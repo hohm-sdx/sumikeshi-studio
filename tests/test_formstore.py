@@ -707,6 +707,91 @@ def test_template_png_is_checked_to_the_end(tmp_path, monkeypatch):
     )  # 読めた画像は確かめ直さず、読めなかった3つだけ確かめ直す
 
 
+def test_png_check_stops_when_data_grows_beyond_size(monkeypatch):
+    """見本の画像の画像のデータ（IDAT）を展開した量が、見出しの幅・高さから決まる大きさを超えたら、最後まで展開せずに
+    止める（ファイルの大きさの上限の中でも、展開すると数GBになる画像を作れるため）。10×10画素のグレーの見出しに、
+    展開すると 50MB になるデータ（圧縮して約50KB）を付けた PNG で確かめる"""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    ihdr = struct.pack(">IIBBBBB", 10, 10, 8, 0, 0, 0, 0)
+    data = (
+        formstore.PNG_SIGNATURE
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(bytes(50 * 1024**2), 9))
+        + chunk(b"IEND", b"")
+    )
+    inflated = []
+    real = zlib.decompressobj
+
+    class Counting:
+        def __init__(self):
+            self.inner = real()
+
+        def decompress(self, data, limit=0):
+            out = self.inner.decompress(data, limit)
+            inflated.append(len(out))
+            return out
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    monkeypatch.setattr(formstore.zlib, "decompressobj", Counting)
+    with pytest.raises(formstore.PngError, match="画像のデータの大きさが合いません"):
+        formstore.check_png(data)
+    assert sum(inflated) <= 2 * 1024**2  # 展開は1回に1MBまで。上限を超えた回で止める
+    # 正しい PNG は今までどおり通る
+    assert formstore.check_png(png_bytes(10, 10)) == (10, 10)
+
+
+def test_png_check_rejects_data_cut_inside_ihdr():
+    """シグネチャと IHDR の名前までは合うが、IHDR のかたまり（先頭から33バイト）の途中で切れた PNG は、PNG として読めない
+    （PngError）。幅・高さを読む前に確かめる（確かめないと、英語の文の struct.error になる）"""
+    data = png_bytes(10, 10)
+    for size in range(16, 33):
+        with pytest.raises(formstore.PngError, match="PNG の画像ではありません"):
+            formstore.check_png(data[:size])
+    assert formstore.check_png(data) == (10, 10)
+
+
+def test_png_check_allows_extra_rows_of_interlaced_image():
+    """インターレース（Adam7）の PNG は、7回に分けた行ごとにフィルタの1バイトと端数が増え、展開した大きさが、見出しの
+    幅・高さから決まる大きさを超える。超えた分が余裕（4 × 高さ + 16）の中なら通し、OpenCV でも同じ画素に読める。
+    64×48画素のグレーの画像は、展開すると3,162バイトで、見出しから決まる3,120バイトを42バイト超える"""
+    import struct
+    import zlib
+
+    import cv2
+    import numpy as np
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    w, h = 64, 48
+    img = (np.arange(w * h, dtype=np.uint32) * 37 % 251).astype(np.uint8).reshape(h, w)
+    raw = b""
+    for x0, y0, dx, dy in ((0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4),
+                           (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)):  # fmt: skip
+        part = img[y0::dy, x0::dx]
+        raw += b"".join(b"\x00" + bytes(row) for row in part)  # 行ごとにフィルタなし
+    assert len(raw) == 3162 and len(raw) - h * (1 + w) == 42
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 1)
+    data = (
+        formstore.PNG_SIGNATURE
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
+    assert formstore.check_png(data) == (w, h)
+    decoded = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_GRAYSCALE)
+    assert np.array_equal(decoded, img)
+
+
 def test_new_spec_from_editor_boxes():
     """範囲を描く画面の範囲から、保存する様式を作る。座標は整数に丸め、幅と高さは1以上にする。消す範囲は erase に
     入れ、枠の線の組は持たない。版とフォルダは、編集を始めた様式から引き継ぐ"""

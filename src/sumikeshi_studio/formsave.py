@@ -220,7 +220,7 @@ def save(
         updated_at=datetime.now().isoformat(timespec="seconds"),
         updated_by=user or getpass.getuser(),
         format=formstore.FORMAT,
-        saved_with=version_text(),  # 保存したツールのバージョン（version.txt の作った日時を含む）
+        saved_with=version_text(),  # 保存したツールのバージョン（version.txt の作った日を含む）
         folder=str(folder),
     )
     tmp = folder / f".{spec.id}.{uuid.uuid4().hex[:8]}.tmp"

@@ -102,9 +102,7 @@ MODELS = {
     "Cls": "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
     "Rec": "PP-OCRv6_rec_small.onnx",
 }
-MISSING_MODEL = (
-    "OCR のモデルのファイルがありません（{path}）。ツールをインストールし直してください。"
-)
+MISSING_MODEL = "OCR のモデルのファイルがありません（{path}）。ツールをインストールし直してください。"
 
 
 class ModelError(Exception):
@@ -126,8 +124,22 @@ def model_params(folder: Path | None = None) -> dict[str, str]:
     return params
 
 
+def _quiet_onnxruntime() -> None:
+    """onnxruntime の利用状況の記録と送信を止める
+
+    onnxruntime は、読み込んだときと推論の準備のときに、利用状況のイベントを作る（Linux の部品は、端末の識別子などを
+    ファイルに書き、HTTPS で送る部品を持つ。Windows の部品は ETW のイベントを出し、Windows の診断データの設定に
+    よっては送られる）。ツールは通信しないので止める。Linux の部品は環境変数で止まり、読み込んだときに読むので、
+    読み込む前に入れる。Windows の部品はこの環境変数を持たないので、ETW のイベントは関数で止める"""
+    os.environ["ORT_DISABLE_TELEMETRY"] = "1"
+    import onnxruntime
+
+    onnxruntime.disable_telemetry_events()
+
+
 @cache
 def _engine() -> RapidOCR:
+    _quiet_onnxruntime()
     from rapidocr import RapidOCR
 
     return RapidOCR(
@@ -137,6 +149,20 @@ def _engine() -> RapidOCR:
             **model_params(),
         }
     )
+
+
+def _ready_engine() -> RapidOCR:
+    """エンジンを呼ぶ直前に、_lock の中で呼ぶ。onnxruntime の利用状況の ETW のイベントを止め直してから、エンジンを返す
+
+    onnxruntime の Windows の部品は、ほかのプログラムがこの提供元の ETW の記録をあとから始めると、関数で止めた
+    イベントをまた出す（記録を始めたときに ETW から呼ばれる関数が、イベントを出すかどうかを、記録が有効かどうかで
+    置き直すため）。読み込んだときに一度止めるだけでは、その後の推論と、初めて使うモデルの準備のイベントが出うるので、
+    エンジンを呼ぶたびに止め直す"""
+    engine = _engine()
+    import onnxruntime
+
+    onnxruntime.disable_telemetry_events()
+    return engine
 
 
 def read(
@@ -149,7 +175,9 @@ def read(
     """
     Engine(engine)
     with _lock:
-        res = _engine()(_bgr(img), use_det=True, use_cls=not upright, use_rec=True)
+        res = _ready_engine()(
+            _bgr(img), use_det=True, use_cls=not upright, use_rec=True
+        )
     if not res.txts:
         return Result([])
     return Result([Text.from_corners(t, c) for c, t in zip(res.boxes, res.txts)])
@@ -158,13 +186,13 @@ def read(
 def find_lines(img: np.ndarray):
     """文字の行の位置だけを検出する（文字は読まない）。結果の boxes を使う"""
     with _lock:
-        return _engine()(_bgr(img), use_det=True, use_cls=False, use_rec=False)
+        return _ready_engine()(_bgr(img), use_det=True, use_cls=False, use_rec=False)
 
 
 def classify_lines(crops: list[np.ndarray]) -> list[tuple[str, float]]:
     """切り出した行ごとに、0度か180度かとその確からしさを返す"""
     with _lock:
-        return _engine()._load_cls_model()(crops).cls_res
+        return _ready_engine()._load_cls_model()(crops).cls_res
 
 
 def _bgr(img: np.ndarray) -> np.ndarray:

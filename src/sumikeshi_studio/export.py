@@ -82,7 +82,8 @@ class PageImage:
     width: int  # 画素
     height: int
     masked: int  # 墨消しした範囲の数
-    components: int = 3  # JPEG の色の数（グレーは1、カラーは3）
+    components: int  # JPEG の色の数（グレーは1、カラーは3）
+    dpi: float  # 描いた解像度（imaging.resolve で決めたもの。PDF のページの大きさに使う）
 
 
 # mask_pages(jobs) は、jobs のそれぞれを墨消しした PageImage を、jobs の順に返す
@@ -159,7 +160,7 @@ def export(
             _notify(progress, 0, total, tr("1ページ目を墨消ししています"))
             for i, (job, image) in enumerate(zip(jobs, mask_pages(jobs))):
                 report.masked += image.masked
-                out.add_page(image, job.source.dpi)
+                out.add_page(image, image.dpi)
                 _notify(
                     progress,
                     i + 1,
@@ -261,7 +262,8 @@ def mask_page(job: PageJob) -> PageImage:
     """
     # 色のないページはグレーで描く（出力も色のないページはグレーにするので、JPEG は RGB で描いたときと同じ）。
     # 描いた画像は、向きと傾きを直した画像を作ったら手放す（同時に持つ画像を2つまでにする）
-    with imaging.pixels(job.source, gray=None) as (view, owned, _full):
+    source = imaging.resolve(job.source)
+    with imaging.pixels(source, gray=None) as (view, owned, _full):
         img = imaging.correct(view, job.quarter_turns, job.skew)
         if not owned and (img is view or np.may_share_memory(img, view)):
             img = img.copy()  # 回さず傾きも直さないときは、描いた画像がそのまま返るので、閉じる前にコピーする
@@ -282,7 +284,9 @@ def mask_page(job: PageJob) -> PageImage:
         raise RuntimeError(tr("画像の圧縮に失敗しました"))
     components = 1 if compact.ndim == 2 else 3
     masked = len(job.rects) + len(job.polygons)
-    return PageImage(buf.tobytes(), img.shape[1], img.shape[0], masked, components)
+    return PageImage(
+        buf.tobytes(), img.shape[1], img.shape[0], masked, components, source.dpi
+    )
 
 
 def output_paths(

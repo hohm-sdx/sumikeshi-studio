@@ -156,7 +156,7 @@ def _binary(gray: np.ndarray, diff: int = INK_DIFF) -> np.ndarray:
     )
 
 
-def _components(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def components(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """墨のかたまり：(かたまりの番号の画像, かたまりごとの外接する四角の x・y・幅・高さと面積)。番号0は地
 
     番号は16ビットで求める（32ビットで求めるより、ページ全体で約半分の時間で済む）。かたまりが16ビットに収まらない数
@@ -173,7 +173,7 @@ def _components(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 def _text_sized(ink: np.ndarray) -> np.ndarray:
     """墨のかたまりのうち、字の大きさ（TEXT_MIN・TEXT_MAX）のものの画素"""
-    labels, stats = _components(ink)
+    labels, stats = components(ink)
     w, h = stats[:, 2], stats[:, 3]
     text = (np.minimum(w, h) >= TEXT_MIN) & (np.maximum(w, h) < TEXT_MAX)
     text[0] = False  # 地
@@ -353,7 +353,7 @@ def _segments(mask: np.ndarray, horizontal: bool) -> list[Line]:
     after[1:] = inked[:-1]
     kept = np.flatnonzero(inked | after)  # 墨のある行と、そのすぐ後の行
     small = np.take(mask, kept, axis=0 if horizontal else 1)
-    _, st = _components(small)
+    _, st = components(small)
     out = []
     for i in range(1, len(st)):
         x, y, w, h, area = st[i]

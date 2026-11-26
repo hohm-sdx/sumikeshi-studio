@@ -16,10 +16,12 @@ import pytest
 
 DOC_V4 = ("192.0.2.1", 80)
 DOC_V6 = ("2001:db8::1", 443)
-# 例外になるまでの時間の上限（秒）。実際に接続しようとすると、届かない先では、テストで渡す timeout（1秒）か、
-# それより長く待つので、その半分までに例外になったことが、通信の前に止めたことの確認になる。全件のテストを並べて
-# 流すと、すぐに例外になるときでも数十ミリ秒かかることがあるので、それより十分に長くしている
-LIMIT = 0.5
+# 接続を待つ時間（秒）と、例外になるまでの時間の上限（秒）。実際に接続しようとすると、届かない先では TIMEOUT まで
+# 待つので、その3分の1までに例外になったことが、通信の前に止めたことの確認になる。止めたときは数ミリ秒で例外に
+# なるが、全件のテストを並べて流すと、プロセスが止まって1秒近くかかることがあったので（CPU の取り合いなど。CI は
+# さらに遅い）、上限をその10倍より長くしている
+TIMEOUT = 30
+LIMIT = 10
 
 
 @pytest.fixture
@@ -33,6 +35,7 @@ def tried():
 def test_connect_is_blocked(tried):
     """AF_INET・AF_INET6 の接続は、接続先を示した例外にし、つながない"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(TIMEOUT)
         start = time.perf_counter()
         with pytest.raises(netguard.NetworkBlocked, match=r"接続 192\.0\.2\.1:80"):
             s.connect(DOC_V4)
@@ -67,7 +70,7 @@ def test_name_resolution_is_blocked(tried):
     with pytest.raises(netguard.NetworkBlocked, match=r"名前の解決 example\.com"):
         socket.gethostbyname("example.com")
     with pytest.raises(netguard.NetworkBlocked, match=r"名前の解決 192\.0\.2\.1:80"):
-        socket.create_connection(DOC_V4, timeout=1)
+        socket.create_connection(DOC_V4, timeout=TIMEOUT)
     assert time.perf_counter() - start < LIMIT
     assert len(tried) == 3
 
@@ -79,9 +82,9 @@ def test_http_libraries_are_blocked(tried):
 
     start = time.perf_counter()
     with pytest.raises(netguard.NetworkBlocked):
-        urllib.request.urlopen("http://192.0.2.1/", timeout=1)
+        urllib.request.urlopen("http://192.0.2.1/", timeout=TIMEOUT)
     with pytest.raises(netguard.NetworkBlocked):
-        requests.get("https://example.com/", timeout=1)
+        requests.get("https://example.com/", timeout=TIMEOUT)
     assert time.perf_counter() - start < LIMIT
     assert tried == ["名前の解決 192.0.2.1:80", "名前の解決 example.com:443"]
 

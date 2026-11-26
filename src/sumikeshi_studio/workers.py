@@ -32,16 +32,18 @@ from .review import Document
 
 CRASHED = "解析のプロセスが途中で終了しました。"
 NOT_STARTED = "解析のプロセスを起動できませんでした。"
-# 解析のプロセスを2つにする条件。1つ増やすとメモリが約500MB増えるため、
-# 空きメモリの少ない PC では1つにする。8コアの環境では、20ページの解析が約3割短くなった
+# 解析のプロセスを2つにする条件。解析のプロセス1つのメモリは約0.5GB（1つ増やしたときの空きメモリの減りは、論理 CPU 8・
+# メモリ 8GB の環境で約0.2〜0.3GB）なので、空きメモリの少ない PC では1つにする。起動したときの空きが 2GB 以上あれば、
+# 2つにしても、メモリが少ない状態に切り替える境目（workcache.LOW_MEMORY）までは余裕が残る見込み。8コアの環境では、
+# 20ページの解析が約3割短くなった
 TWO_PROCESSES_MIN_CPUS = 4
-TWO_PROCESSES_MIN_AVAILABLE = 4 * 1024**3  # 起動したときの空きメモリ（バイト）
+TWO_PROCESSES_MIN_AVAILABLE = 2 * 1024**3  # 起動したときの空きメモリ（バイト）
 # 解析のプロセスの数を指定する環境変数（Windows で1つと2つを比べるためのもの）
 ENV_PROCESSES = "SUMIKESHI_STUDIO_ANALYSIS_PROCESSES"
 
 
 def process_count() -> int:
-    """解析のプロセスの数：論理 CPU が4つ以上で、空きメモリが4GB以上なら2つ、そうでなければ1つ"""
+    """解析のプロセスの数：論理 CPU が4つ以上で、空きメモリが2GB以上なら2つ、そうでなければ1つ"""
     if value := os.environ.get(ENV_PROCESSES, "").strip():
         try:
             return max(1, int(value))
@@ -79,9 +81,10 @@ class Analyzer(QObject):
     page_done = Signal(object, int, object, str)  # 番号（token）, ページ, 結果, エラー
     # 解析が終わった依頼（executor の裏のスレッドから、画面のスレッドに渡す）
     _finished = Signal(
-        object, object, object, object
-    )  # 番号, AnalysisJob, Future, executor
-    _called = Signal(object, object)  # call の callback, Future
+        object, object, object, object, int
+    )  # 番号, AnalysisJob, Future, executor, 出したときの clear の回数
+    _called = Signal(object, object, object)  # call の callback, Future, executor
+    _mask_crashed = Signal(object)  # 出力の墨消しで途中で終わった executor
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -90,11 +93,30 @@ class Analyzer(QObject):
         self.queue: deque[tuple[object, AnalysisJob]] = deque()
         self.running = 0  # 解析のプロセスに出して、まだ終わっていない依頼の数
         self.calling = 0  # call で出して、まだ callback を呼んでいない処理の数
+        # ほかの依頼と同時に動かさない依頼（AnalysisJob.alone）が動いている
+        self.alone_running = False
+        # その依頼が動いているあいだに頼まれた call（fn, args, callback）。その依頼が終わってから出す
+        self.waiting_calls: deque[tuple[Callable, tuple, Callable]] = deque()
+        # clear の回数。それより前に出した依頼は、解析のプロセスが途中で終わっても、やり直さない
+        self.cleared = 0
+        # 解析のプロセスの組（executor）ごとの、出してまだ終わっていない処理（解析の依頼・call・出力の墨消し）。
+        # 組が途中で終わったときに、どのページが原因かを決めるのに使う。出力の墨消しは出力のスレッドから出し、終わりは
+        # executor のスレッドで知らされるので、ロックの中で読み書きする
+        self.lock = threading.Lock()
+        self.live: dict[Executor, set[Future]] = {}
+        self.submitting: dict[Executor, int] = {}
+        # 途中で終わった組の、終わったときに出していた処理の数（その組の処理がすべて終わるまで覚える）と、それで失敗した
+        # 解析の依頼ごとの、その数（1つなら、そのページが原因とわかる）
+        self.ended: dict[Executor, int] = {}
+        self.together: dict[Future, int] = {}
         # 解析のプロセスを1つに減らす途中（limit_to_one）。出した依頼と処理が終わるまで、新しい依頼を出さない
         self.shrinking = False
         # 依頼がすぐに終わったとき（出した処理の中で終わりが知らされる）も、出した処理が終わってから受け取る
         self._finished.connect(self._done, Qt.ConnectionType.QueuedConnection)
         self._called.connect(self._call_done, Qt.ConnectionType.QueuedConnection)
+        self._mask_crashed.connect(
+            self._restart_if_current, Qt.ConnectionType.QueuedConnection
+        )
 
     def start(self) -> Future:
         """解析のプロセスを立ち上げ、準備（OCR と型）を頼む
@@ -104,6 +126,10 @@ class Analyzer(QObject):
         self.processes = process_count()
         self.executor = new_executor(self.processes)
         ready = [self._submit(analysis.prepare) for _ in range(self.processes)]
+        # 出せなかった準備があれば、その失敗を返す（2つ目の解析のプロセスを起動できなかったときも、起動の準備の失敗にする）
+        for future in ready:
+            if future.done() and not future.cancelled() and future.exception():
+                return future
         return ready[0]
 
     def submit(self, token, jobs: list[AnalysisJob]):
@@ -114,6 +140,7 @@ class Analyzer(QObject):
     def clear(self):
         """待っている依頼を取り消す。解析中の依頼の結果は届く（呼ぶ側が番号で見分けて捨てる）"""
         self.queue.clear()
+        self.cleared += 1
 
     def prioritize(self, token, index: int):
         """表示したページ（index）とそれより後のページを、待っているほかの依頼より先に解析する
@@ -151,91 +178,242 @@ class Analyzer(QObject):
     def shutdown(self):
         """待っている依頼を取り消し、解析中のページが終わったら解析のプロセスを終える"""
         self.queue.clear()
+        self.waiting_calls.clear()
         if self.executor is not None:
             self.executor.shutdown(wait=False, cancel_futures=True)
             self.executor = None
 
     def _pump(self):
         self._shrink()
+        # 待たせていた call を出す（次の1ページずつの依頼は、出した call が終わってから出す）
+        if not self.alone_running and self.executor is not None:
+            while self.waiting_calls:
+                fn, args, callback = self.waiting_calls.popleft()
+                self._send_call(fn, args, callback)
         while (
             not self.shrinking
             and self.executor is not None
             and self.queue
             and self.running < self.processes
         ):
-            token, job = self.queue.popleft()
-            call = (analysis.analyze, job)
-            try:
-                future = self._submit(*call)
-            except (
-                BrokenProcessPool
-            ):  # 待っているあいだに、解析のプロセスが終わっていた
-                self._restart()
-                future = self._submit(*call)
+            token, job = self.queue[0]
+            # ほかの依頼と同時に動かさない依頼は、ほかの依頼と call で出した処理が動いていないときにだけ出し、動いている
+            # あいだはほかの依頼を出さない（出力の墨消しは待たない。出力のスレッドが出すため）
+            if self.alone_running or (job.alone and (self.running or self.calling)):
+                break
+            self.queue.popleft()
+            future = self._submit(analysis.analyze, job, page=True)
             self.running += 1
-            executor = self.executor
+            self.alone_running = job.alone
             future.add_done_callback(
-                lambda f, t=token, j=job, e=executor: self._finished.emit(t, j, f, e)
+                lambda f, t=token, j=job, e=self.executor, c=self.cleared: (
+                    self._finished.emit(t, j, f, e, c)
+                )
             )
 
     def call(self, fn: Callable, *args, callback: Callable) -> None:
         """解析のプロセスで fn(*args) を動かし、終わったら画面のスレッドで callback(結果, 例外) を呼ぶ
 
         様式の登録・編集の画面で、保存の前に確かめる処理や、題名を読む処理に使う（重い処理で画面を止めないため）。
-        解析の依頼の列には入れず、すぐに出す（解析中のページが終わった後に動く）。
+        解析の依頼の列には入れず、すぐに出す（解析中のページが終わった後に動く）。ほかの依頼と同時に動かさない依頼が
+        動いているあいだは、それが終わってから出す。
         """
         if self.executor is None:
             callback(None, RuntimeError(tr(NOT_STARTED)))
             return
-        try:
-            future = self._submit(fn, *args)
-        except BrokenProcessPool:  # 待っているあいだに、解析のプロセスが終わっていた
-            self._restart()
-            future = self._submit(fn, *args)
-        self.calling += 1
-        future.add_done_callback(lambda f: self._called.emit(callback, f))
-
-    def _call_done(self, callback: Callable, future: Future):
-        self.calling -= 1
-        if self.shrinking:
-            self._pump()  # 1つに減らす途中なら、出した処理が終わったところで立ち上げ直して、待っている依頼を出す
-        try:
-            result, error = future.result(), None
-        except BrokenProcessPool:
-            result, error = None, RuntimeError(tr(CRASHED))
-        except CancelledError:  # 閉じるときに取り消した
+        if self.alone_running:
+            self.waiting_calls.append((fn, args, callback))
             return
-        except Exception as e:  # noqa: BLE001  どんな失敗でも呼んだ側に知らせる
-            traceback.print_exception(e)
-            result, error = None, e
-        callback(result, error)
+        self._send_call(fn, args, callback)
 
-    def _submit(self, fn: Callable, *args) -> Future:
+    def _send_call(self, fn: Callable, args: tuple, callback: Callable) -> None:
+        future = self._submit(fn, *args)
+        # 出した executor（出す途中で作り直したときは、作り直した後のもの）
+        executor = self.executor
+        self.calling += 1
+        future.add_done_callback(lambda f: self._called.emit(callback, f, executor))
+
+    def _call_done(self, callback: Callable, future: Future, executor: Executor):
+        self.calling -= 1
+        cancelled = future.cancelled()  # 閉じるときに取り消した
+        result, error = None, None
+        if not cancelled:
+            try:
+                result = future.result()
+            except BrokenProcessPool:
+                # 解析のプロセスが途中で終わった。次の依頼を待たずに作り直す（その後に始めた出力の墨消しを、終わった
+                # 解析のプロセスに出さないため）
+                self._restart_if_current(executor)
+                error = RuntimeError(tr(CRASHED))
+            except Exception as e:  # noqa: BLE001  どんな失敗でも呼んだ側に知らせる
+                traceback.print_exception(e)
+                error = e
+        # 1つに減らす途中なら立ち上げ直し、1ページずつの依頼が待っていれば出す
+        self._pump()
+        if not cancelled:
+            callback(result, error)
+
+    def _submit(self, fn: Callable, *args, page: bool = False) -> Future:
         """解析のプロセスで fn(*args) を動かす。今の画面の言語を一緒に渡す（解析のプロセスで作る文を、同じ言語に
-        するため）"""
-        return self.executor.submit(analysis.call_in, i18n.language(), fn, *args)
+        するため）。page は、ページの解析の依頼であること
+
+        待っているあいだに解析のプロセスが終わっていたら、作り直して出す。出せなければ（解析のプロセスを起動できない
+        など）、その例外を入れた Future を返す（呼んだ側は、ほかの失敗と同じく結果で受け取る。例外を外へ出すと、依頼の
+        数と状態が戻らず、以後の解析が止まるため）。
+        """
+        call = (analysis.call_in, i18n.language(), fn, *args)
+        try:
+            try:
+                return self._tracked(self.executor, *call, page=page)
+            except BrokenProcessPool:
+                self._restart()
+                return self._tracked(self.executor, *call, page=page)
+        except Exception as e:  # noqa: BLE001  どんな失敗でも、その依頼の失敗として届ける
+            traceback.print_exception(e)
+            failed = Future()
+            failed.set_exception(e)
+            return failed
+
+    def _tracked(
+        self, executor: Executor, fn: Callable, *args, page: bool = False
+    ) -> Future:
+        """executor に fn(*args) を出し、終わるまで live に入れる（どのスレッドからも呼べる）。page は、ページの解析の
+        依頼であること（途中で終わったときに、together に、そのとき出していた処理の数を入れる）
+
+        出している途中（submit から戻る前）の処理も、submitting で数える（submit から戻る前に executor が終わると、
+        ほかの処理が先に終わったと知らされ、その時点で live にない処理を数え落とすため）。
+        """
+        with self.lock:
+            self.submitting[executor] = self.submitting.get(executor, 0) + 1
+        future = None
+        try:
+            future = executor.submit(fn, *args)
+        finally:
+            with self.lock:
+                self.submitting[executor] -= 1
+                if future is not None:
+                    self.live.setdefault(executor, set()).add(future)
+                self._forget(executor)
+
+        def settle(f: Future) -> None:
+            # executor が途中で終わると、出していた処理がすべて、続けて BrokenProcessPool で終わる。最初の1つが
+            # 終わるときの数が、終わったときに出していた処理の数
+            with self.lock:
+                live = self.live.get(executor, set())
+                if not f.cancelled() and isinstance(f.exception(), BrokenProcessPool):
+                    count = self.ended.setdefault(
+                        executor, len(live) + self.submitting.get(executor, 0)
+                    )
+                    if page:
+                        self.together[f] = count
+                live.discard(f)
+                self._forget(executor)
+
+        future.add_done_callback(settle)
+        return future
+
+    def _forget(self, executor: Executor) -> None:
+        """executor に出した処理がすべて終わったら、その executor の数を消す（ロックの中で呼ぶ）"""
+        if not self.live.get(executor) and not self.submitting.get(executor):
+            self.live.pop(executor, None)
+            self.submitting.pop(executor, None)
+            self.ended.pop(executor, None)
+
+    def masker(self):
+        """出力でページを墨消しする処理を、今の解析のプロセスで並べて行う関数（export.PageMasker。解析のプロセスが
+        なければ None）。出力のスレッドから呼ぶ。出した処理は、解析のプロセスが途中で終わったときに、同時に動いていた
+        処理の数に入れる（同時に解析していたページを、原因とみなさないため）"""
+        executor = self.executor
+        if executor is None:
+            return None
+
+        language = i18n.language()
+
+        def mask_pages(jobs):
+            nonlocal executor
+            futures = []
+            try:
+                for job in jobs:
+                    call = (analysis.call_in, language, analysis.mask_page, job)
+                    try:
+                        future = self._tracked(executor, *call)
+                    except BrokenProcessPool:
+                        raise
+                    except RuntimeError:
+                        # 受け取った後に、解析のプロセスを1つに減らすために終えた executor（limit_to_one）。今の
+                        # executor で出し直す
+                        current = self.executor
+                        if current is None or current is executor:
+                            raise
+                        executor = current
+                        future = self._tracked(executor, *call)
+                    future.add_done_callback(
+                        lambda f, e=executor: self._mask_done(e, f)
+                    )
+                    futures.append(future)
+                for future in futures:
+                    yield future.result()
+            finally:
+                for future in futures:
+                    future.cancel()
+
+        return mask_pages
+
+    def _mask_done(self, executor: Executor, future: Future) -> None:
+        """出力の墨消しが終わった（executor のスレッドから呼ばれる）。解析のプロセスが途中で終わっていたら、画面の
+        スレッドで、次の依頼を待たずに作り直す（次の出力の墨消しを、終わった解析のプロセスに出さないため）"""
+        if not future.cancelled() and isinstance(future.exception(), BrokenProcessPool):
+            self._mask_crashed.emit(executor)
+
+    def _requeue_alone(self, token, job: AnalysisJob) -> None:
+        """1ページずつやり直す依頼を、列の先頭（すでに並んでいる、1ページずつの依頼の後ろ）に入れる"""
+        at = 0
+        while at < len(self.queue) and self.queue[at][1].alone:
+            at += 1
+        self.queue.insert(at, (token, job))
+        self._pump()
 
     def _restart(self):
         self.executor.shutdown(wait=False, cancel_futures=True)
         self.executor = new_executor(self.processes)
 
-    def _done(self, token, job: AnalysisJob, future: Future, executor: Executor):
+    def _restart_if_current(self, executor: Executor) -> None:
+        """途中で終わった executor が今のものなら作り直す（同じ組の処理が続けて失敗しても、作り直すのは1回だけ）"""
+        if self.executor is not None and executor is self.executor:
+            self._restart()
+
+    def _done(
+        self, token, job: AnalysisJob, future: Future, executor: Executor, cleared: int
+    ):
         self.running -= 1
+        if job.alone:
+            self.alone_running = False
+        with self.lock:
+            # 途中で終わった組で、終わったときに出していた処理の数（出せなかった依頼は1つ）
+            together = self.together.pop(future, 1)
         if future.cancelled():  # 閉じるときに取り消した
             return
         result, error = None, ""
         try:
             result = future.result()
         except BrokenProcessPool:
-            # 解析のプロセスが途中で終わった。作り直すのは、終わった組ごとに1回だけ
-            if self.executor is not None and executor is self.executor:
-                self._restart()
-            # 解析のプロセスが2つだと、どのページが原因か分からないため、解析中だったページを
-            # 1回だけやり直す。やり直しても終われば「処理できません」とする
-            if not job.retried and self.executor is not None:
-                self.queue.appendleft((token, dataclasses.replace(job, retried=True)))
-                self._pump()
-                return
+            # 解析のプロセスが途中で終わった
+            self._restart_if_current(executor)
+            # 待っている依頼を取り消した（開き直した・閉じた）後なら、前のファイルのページはやり直さない
+            if self.executor is not None and cleared == self.cleared:
+                if together > 1 and not job.alone:
+                    # ほかのページ・call で出した処理・出力の墨消しと同時に動いていたので、どれが原因か分からない。
+                    # やり直しの数に入れずに、1ページずつやり直す（同時にやり直すと、原因のページがまた終わったときに、
+                    # ほかのページも「処理できません」になるため）
+                    self._requeue_alone(token, dataclasses.replace(job, alone=True))
+                    return
+                if not job.retried:
+                    # このページの解析だけで終わったか、1ページずつで出した依頼が終わった（出力の墨消しと同時でも。
+                    # 数に入れずにやり直し続けないため）。このページが原因とみなし、1回だけ、1ページずつでやり直す
+                    self._requeue_alone(
+                        token, dataclasses.replace(job, retried=True, alone=True)
+                    )
+                    return
             error = tr(CRASHED)
         except formstore.FormError as e:
             # 様式の型の画像を読めない（様式のフォルダにつながらないなど）。
@@ -243,8 +421,15 @@ class Analyzer(QObject):
             # 墨消ししないまま進めないため）
             error = str(e)
         except Exception as e:  # noqa: BLE001
-            traceback.print_exception(e)  # 解析のプロセスでの経過も含まれる
-            error = f"{type(e).__name__}: {e}"
+            # 入力のファイルを読めない理由（imaging.InputError）は、画面に出す文なので、文だけを届ける。imaging は
+            # 重いライブラリを読み込むが、解析の結果が届くときには、起動の準備で読み込み済み
+            from .imaging import InputError
+
+            if isinstance(e, InputError):
+                error = str(e)
+            else:
+                traceback.print_exception(e)  # 解析のプロセスでの経過も含まれる
+                error = f"{type(e).__name__}: {e}"
         self.page_done.emit(token, job.index, result, error)
         self._pump()
 
@@ -426,7 +611,8 @@ class Exporter(QThread):
     """ファイルを順に出力する。1ファイルの失敗で残りを止めない
 
     ページを墨消しする処理は、解析のプロセスに頼んで並べて行う。
-    executor_of は、そのときの解析のプロセスの executor を返す関数（なければこのスレッドで行う）。
+    masker_of は、そのときの解析のプロセスで墨消しする関数（Analyzer.masker）を返す関数（None を返せば、このスレッドで
+    行う）。
     """
 
     progress = Signal(int, int, str)
@@ -438,7 +624,7 @@ class Exporter(QThread):
     def __init__(
         self,
         jobs: list[tuple[Document, Path]],
-        executor_of: Callable[[], Executor | None] = lambda: None,
+        masker_of: Callable[[], Callable | None] = lambda: None,
     ):
         super().__init__()
         self.jobs = [
@@ -449,7 +635,7 @@ class Exporter(QThread):
             )  # 削除したページは除く
             for doc, out in jobs
         ]
-        self.executor_of = executor_of
+        self.masker_of = masker_of
 
     def run(self):
         from . import export
@@ -467,12 +653,7 @@ class Exporter(QThread):
             def progress(d, _n, message, base=done, prefix=prefix):
                 self.progress.emit(base + d, total, prefix + message)
 
-            executor = self.executor_of()
-            mask_pages = (
-                (lambda jobs, ex=executor: ex.map(analysis.mask_page, jobs))
-                if executor is not None
-                else None
-            )
+            mask_pages = self.masker_of()
 
             def unchanged(doc=doc):
                 """開いた後に入力ファイルが変わっていれば、出力しない"""
@@ -495,11 +676,16 @@ class Exporter(QThread):
                 # 出力の途中で解析のプロセスが終わった。このファイルは出力できなかったとし、
                 # 残りのファイルはこのスレッドで1ページずつ出力する
                 traceback.print_exc()
-                self.executor_of = lambda: None
+                self.masker_of = lambda: None
                 self.file_done.emit(doc, out, None, tr(CRASHED))
-            # どんな失敗でも画面に知らせる
+            # どんな失敗でも画面に知らせる。入力のファイルを読めない理由は、画面に出す文なので、文だけを出す
             except Exception as e:  # noqa: BLE001
-                traceback.print_exc()
-                self.file_done.emit(doc, out, None, f"{type(e).__name__}: {e}")
+                from .imaging import InputError
+
+                if isinstance(e, InputError):
+                    self.file_done.emit(doc, out, None, str(e))
+                else:
+                    traceback.print_exc()
+                    self.file_done.emit(doc, out, None, f"{type(e).__name__}: {e}")
             done += len(pages)
         self.all_done.emit()

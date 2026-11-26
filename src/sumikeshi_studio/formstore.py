@@ -154,7 +154,7 @@ class FormSpec:
     updated_at: str = ""
     updated_by: str = ""
     format: int = FORMAT  # .json のフォーマットの番号（このツールが扱えるものより大きければ、編集できない）
-    # 保存したツールのバージョン（例：0.1.0 (built 2026-11-07 04:58)）
+    # 保存したツールのバージョン（例：0.3.2 (built 2026-11-24)）
     saved_with: str = ""
     folder: str = ""  # 様式のフォルダ（型の画像がある場所）
     # 見本の罫線（横の線, 縦の線。rulings.read）。塗る前の作業画像から読めた様式だけが持つ（登録と、新しい用紙への
@@ -624,13 +624,6 @@ def _words(value, key: str, fail) -> tuple[str, ...]:
     return tuple(value)
 
 
-def png_size(head: bytes) -> tuple[int, int] | None:
-    """PNG の先頭（24バイト以上）から、幅・高さを読む。PNG でなければ None"""
-    if len(head) < 24 or head[:8] != PNG_SIGNATURE or head[12:16] != b"IHDR":
-        return None
-    return struct.unpack(">II", head[16:24])
-
-
 # 最後まで確かめた見本の画像：(パス, 大きさ, 更新日時) → 幅・高さ。見本の画像は版ごとに名前が変わり、上書きしない
 # ので、大きさと更新日時が同じなら確かめ直さない
 _checked_images: dict[tuple[str, int, int], tuple[int, int]] = {}
@@ -646,16 +639,24 @@ def check_png(data: bytes) -> tuple[int, int]:
 
     先頭のシグネチャ、最初のかたまり（チャンク）が IHDR、各かたまりの CRC、IEND まであること、画像のデータ（IDAT）の圧縮が
     最後まで展開できること、展開した大きさが IHDR から決まる大きさと合うこと（インターレースでない画像）を確かめる。
+    展開した大きさが IHDR から決まる大きさを超えたら、その時点で止める（インターレースの画像は、その分の余裕を見る）。
     標準ライブラリだけで行う（画面のプロセスに OpenCV を読み込まないため）。展開したデータは持たずに数えるだけにする。
     """
-    if data[:8] != PNG_SIGNATURE or data[12:16] != b"IHDR":
+    # シグネチャ（8バイト）と IHDR のかたまり（長さ・名前・中身13バイト・CRC で25バイト）がそろっていなければ、PNG でない
+    if len(data) < 8 + 25 or data[:8] != PNG_SIGNATURE or data[12:16] != b"IHDR":
         raise PngError(tr("PNG の画像ではありません"))
     width, height, depth, color = struct.unpack(">IIBB", data[16:26])
     if max(width, height) > MAX_IMAGE_SIDE:
         raise PngError(
             tr("大きすぎます（縦横の上限は{limit}画素）", limit=MAX_IMAGE_SIDE)
         )
-    interlace = data[28] if len(data) > 28 else 0
+    interlace = data[28]
+    # IHDR から決まる、展開した画像のデータの大きさ（各行はフィルタの種類の1バイトと画素）。超えたら最後まで展開せずに
+    # 止める。インターレースの画像は、7回に分けた行（合わせて高さの2倍まで）ごとに、フィルタと端数の2バイトが増える。
+    # 正しくない色の種類は1画素の値を4つ、16ビットより深い深さは16ビットとして数える（その画像は OpenCV で読めない）
+    row = math.ceil(width * PNG_CHANNELS.get(color, 4) * min(depth, 16) / 8) + 1
+    expected = row * height
+    limit = expected + (4 * height + 16 if interlace else 0)
     pos, inflate, total, ended = 8, zlib.decompressobj(), 0, False
     try:
         while pos + 12 <= len(data):
@@ -669,6 +670,10 @@ def check_png(data: bytes) -> tuple[int, int]:
             if kind == b"IDAT":
                 while body:
                     total += len(inflate.decompress(body, 1 << 20))
+                    if total > limit:
+                        raise PngError(
+                            tr("壊れています（画像のデータの大きさが合いません）")
+                        )
                     body = inflate.unconsumed_tail
             elif kind == b"IEND":
                 ended = True
@@ -678,10 +683,8 @@ def check_png(data: bytes) -> tuple[int, int]:
         raise PngError(tr("壊れています（画像のデータを展開できません）")) from e
     if not ended or not inflate.eof:
         raise PngError(tr("途中で切れているか、壊れています"))
-    if not interlace and color in PNG_CHANNELS:
-        row = math.ceil(width * PNG_CHANNELS[color] * depth / 8) + 1
-        if total != row * height:
-            raise PngError(tr("壊れています（画像のデータの大きさが合いません）"))
+    if not interlace and color in PNG_CHANNELS and total != expected:
+        raise PngError(tr("壊れています（画像のデータの大きさが合いません）"))
     return width, height
 
 

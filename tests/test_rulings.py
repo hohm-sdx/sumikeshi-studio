@@ -234,7 +234,7 @@ def test_touching_and_merge_match_their_definitions_on_random_lines():
 
 def whole_image_segments(mask: np.ndarray, horizontal: bool) -> list:
     """rulings._segments と同じ線を、行（列）を詰めずに、画像全体の墨のかたまりから求める形"""
-    _, st = rulings._components(mask)
+    _, st = rulings.components(mask)
     out = []
     for x, y, w, h, area in st[1:]:
         if horizontal and w >= 3 * h:
@@ -318,7 +318,7 @@ def test_text_sized_and_thresholds_match_plain_forms():
         ink[y : y + h, x : x + w] = 255
     ink[::7] = 0
     ink[:, ::9] = 0
-    labels, stats = rulings._components(ink)
+    labels, stats = rulings.components(ink)
     w, h = stats[:, 2], stats[:, 3]
     text = (np.minimum(w, h) >= rulings.TEXT_MIN) & (
         np.maximum(w, h) < rulings.TEXT_MAX
@@ -339,13 +339,13 @@ def test_components_fall_back_when_labels_do_not_fit_in_16_bits():
     dots = np.zeros((600, 600), np.uint8)
     dots[::2, ::2] = 255  # 離れた点が 90,000 個
     dots[300:303, 100:400] = 255
-    labels, stats = rulings._components(dots)
+    labels, stats = rulings.components(dots)
     _, labels32, stats32, _ = cv2.connectedComponentsWithStats(dots, connectivity=8)
     assert len(stats) == len(stats32) > 2**16
     assert np.array_equal(labels, labels32) and np.array_equal(stats, stats32)
     few = np.zeros((600, 600), np.uint8)
     few[300:303, 100:400] = 255
-    labels, stats = rulings._components(few)
+    labels, stats = rulings.components(few)
     assert labels.dtype == np.uint16 and stats.tolist()[1] == [100, 300, 300, 3, 900]
     assert rulings._segments(few, True) == [rulings.Line(301.5, 100, 400, 3)]
     assert rulings._segments(np.zeros((600, 600), np.uint8), True) == []

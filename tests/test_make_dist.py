@@ -431,12 +431,12 @@ def test_pdfium_line_and_dll_check(tmp_path):
     assert make_dist.pdfium_line(tmp_path) == (
         "PDFium: 158.0.8125.0 (pdfium-binaries; built from the source of pypdfium2 5.14.0)"
     )
-    # version.txt の中身（作った日時の行は、ツールが version.MADE_PREFIX で探す）
+    # version.txt の中身（作った日の行は、ツールが version.MADE_PREFIX で探す。時刻は書かない）
     stamp = datetime(2026, 11, 11, 9, 5)
     text = make_dist.version_file_text(stamp, tmp_path, "a" * 40)
     assert text.split("\r\n") == [
         f"Sumikeshi Studio {__version__}",
-        "Built: 2026-11-11 09:05",
+        "Built: 2026-11-11",
         "Commit: " + "a" * 40,
         f"Source: https://github.com/hohm-sdx/sumikeshi-studio (tag v{__version__})",
         f"Python: {make_dist.PYTHON_FILE} (python.org)",
@@ -899,14 +899,23 @@ def test_names_of_bundle():
     assert sorted(names) == [
         "README-en.txt",
         "README-ja.txt",
+        "install.bat",
         "scripts",
         "scripts/install.ps1",
         "scripts/uninstall.ps1",
-        "setup.bat",
         "start.bat",
-        "sumikeshi.bat",
+        "sumikeshi-cli.bat",
         "uninstall.bat",
     ]
+    # install.ps1 は、展開したフォルダの直下に、これらのほかのものがあれば止める
+    install = (windows / "scripts" / "install.ps1").read_text("utf-8-sig")
+    (items,) = re.findall(r"^\$PackageItems = @\((.*)\)\r?$", install, re.MULTILINE)
+    top = {p.name for p in windows.iterdir()}
+    assert set(re.findall(r'"([^"]+)"', items)) == top | {
+        "python",
+        make_dist.LICENSE_DIR,
+        version.VERSION_FILE,
+    }
 
 
 def test_readmes_get_measured_path_lengths():
@@ -1000,15 +1009,15 @@ def test_source_commit_outside_repository(tmp_path, monkeypatch):
 
 
 def test_commit_line_does_not_change_build_time(monkeypatch, tmp_path):
-    """version.txt に Commit の行があっても、起動の画面のバージョン（version.made_at）は Built の行を読む"""
+    """version.txt に Commit の行があっても、作った日（version.made_at）は Built の行を読む"""
     monkeypatch.setattr(make_dist, "pdfium_line", lambda site: "PDFium: x")
     text = make_dist.version_file_text(
         datetime(2026, 11, 13, 9, 30), tmp_path, "b" * 40 + " (uncommitted changes)"
     )
     assert "\r\nCommit: " + "b" * 40 + " (uncommitted changes)\r\n" in text
     monkeypatch.setattr(version, "_version_file", lambda: text)
-    assert version.made_at() == "2026-11-13 09:30"
-    assert version.version_text() == f"{__version__} (built 2026-11-13 09:30)"
+    assert version.made_at() == "2026-11-13"
+    assert version.version_text() == f"{__version__} (built 2026-11-13)"
 
 
 def test_public_package_writes_source_without_commit(monkeypatch, tmp_path):
@@ -1017,7 +1026,7 @@ def test_public_package_writes_source_without_commit(monkeypatch, tmp_path):
     text = make_dist.version_file_text(datetime(2026, 11, 17, 9, 0), tmp_path, None)
     assert text.split("\r\n") == [
         f"Sumikeshi Studio {__version__}",
-        "Built: 2026-11-17 09:00",
+        "Built: 2026-11-17",
         f"Source: https://github.com/hohm-sdx/sumikeshi-studio (tag v{__version__})",
         f"Python: {make_dist.PYTHON_FILE} (python.org)",
         "PDFium: x",

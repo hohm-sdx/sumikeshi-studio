@@ -45,8 +45,8 @@ EXIT_STOPPED = 3  # Ctrl+C で途中で止めた
 
 # 使い方と、引数の誤り
 HELP = (
-    "使い方：<入力のファイル・フォルダ> … --out <出力のフォルダ> [--depth <数> | --recursive] [--overwrite] "
-    "[--forms <様式のフォルダ>] [--language ja|en]\n"
+    "使い方：sumikeshi-cli.bat <入力のファイル・フォルダ> … --out <出力のフォルダ> [--depth <数> | --recursive] "
+    "[--overwrite] [--forms <様式のフォルダ>] [--language ja|en]\n"
     "スキャンした帳票の PDF・画像を、画面を出さずに解析し、様式で決めた欄を墨消しした PDF"
     "（元の名前_redacted.pdf）を出力します。\n"
     "　　<入力のファイル・フォルダ>　PDF・画像のファイルか、フォルダ（フォルダは、直下の PDF・画像を開きます）\n"
@@ -80,6 +80,8 @@ NO_FORMS = (
 )
 FILE_HEAD = "[{index}／{total}] {name}（{count}ページ）"
 ANALYZED = "　　{number}ページ目を解析しました（{done}／{pages}）"
+NOT_ANALYZED = "　　{number}ページ目は処理できません（{done}／{pages}）"
+CRASHED_PAGES = "{pages}ページ目の解析で、解析のプロセスが途中で終了しました。"
 EXPORTED = "　　✓ {out}　墨消しした範囲：{count}か所"
 CHECK_HEAD = "　　確かめるべきページ："
 CHECK_LINE = "　　　　{label}：{pages}"
@@ -276,6 +278,7 @@ class Runner(QObject):
             return
         doc = self.targets[self.index]
         st = doc.pages[index]
+        st.source = review.with_result_dpi(st.source, result)
         # 作業画像は持たない（出力は元のファイルから描き直し、作業画像は高さ・幅だけを使う。1つのファイルのページが
         # 多くても、メモリが増え続けないように）
         st.result = (
@@ -285,12 +288,28 @@ class Runner(QObject):
         )
         st.error = error
         self.done += 1
-        say(tr(ANALYZED, number=index + 1, done=self.done, pages=len(doc.pages)))
+        say(
+            tr(
+                NOT_ANALYZED if error else ANALYZED,
+                number=index + 1,
+                done=self.done,
+                pages=len(doc.pages),
+            )
+        )
         if self.done < len(doc.pages):
             return
         self.token = None
         if self.stop_requested:
             self.stopped()
+            return
+        # 解析のプロセスが途中で終了したページは、墨消しせずに入れるためにページを描くと、また終了するので、そのファイルは
+        # 出力を試さない
+        crashed = [st.number + 1 for st in doc.pages if st.error == tr(workers.CRASHED)]
+        if crashed:
+            self.not_exported += 1
+            reason = tr(CRASHED_PAGES, pages=exporttext.ranges_text(crashed))
+            say(tr(NOT_EXPORTED, name=doc.label, reason=reason))
+            self.release(doc)
             return
         self.export(doc)
 
@@ -303,7 +322,7 @@ class Runner(QObject):
             say(tr(NOT_EXPORTED, name=doc.label, reason=tr(EXISTS, out=out)))
             self.release(doc)
             return
-        th = workers.Exporter([(doc, out)], lambda: self.session.analyzer.executor)
+        th = workers.Exporter([(doc, out)], self.session.analyzer.masker)
         th.progress.connect(self.export_progress)
         th.file_done.connect(self.file_done)
         th.all_done.connect(lambda doc=doc: self.release(doc))
@@ -393,6 +412,10 @@ def run(argv: list[str]) -> int:
     i18n.set_language(
         language_arg(argv) or i18n.choose_language(prefs.saved_language())
     )
+    if not argv:
+        # 入力は必ず要るので、引数なしは渡し忘れとして使い方を出す。処理を始めていないので、--help の 0 でなく 2
+        complain(tr(HELP))
+        return EXIT_NOT_STARTED
     try:
         args = parse_args(argv)
         if args.help:

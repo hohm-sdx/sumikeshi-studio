@@ -542,7 +542,7 @@ def test_launcher_state_when_preparation_failed(new_launcher):
 
 
 def test_launcher_shows_version_and_readiness(new_launcher, tmp_path, monkeypatch):
-    """上に、バージョン（配布用パッケージなら作った日時）と、起動の準備の状態を出す"""
+    """上に、バージョン（開発用の環境ならそのことも。配布用パッケージでも作った日時は出さない）と、起動の準備の状態を出す"""
     lw = new_launcher()
     assert lw.version_label.text() == f"バージョン {__version__}（開発用の環境）"
     assert lw.ready_label.text() == "✓ 準備ができました"
@@ -550,14 +550,12 @@ def test_launcher_shows_version_and_readiness(new_launcher, tmp_path, monkeypatc
     python = tmp_path / "python"
     python.mkdir()
     (tmp_path / "version.txt").write_text(
-        "Sumikeshi Studio 0.1.0\r\nBuilt: 2026-11-08 08:10\r\n", "utf-8-sig"
+        "Sumikeshi Studio 0.1.0\r\nBuilt: 2026-11-24\r\n", "utf-8-sig"
     )
     monkeypatch.setattr(sys, "base_prefix", str(python))
-    assert version.version_label() == (
-        f"バージョン {__version__}（2026-11-08 08:10 作成）"
-    )
+    assert version.version_label() == f"バージョン {__version__}"
     i18n.set_language(i18n.EN)
-    assert version.version_label() == f"Version {__version__} (built 2026-11-08 08:10)"
+    assert version.version_label() == f"Version {__version__}"
 
 
 def test_open_files_from_launcher(new_launcher, files, monkeypatch):

@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Hideki Ohmura
 # SPDX-License-Identifier: AGPL-3.0-only
-"""導入とアンインストールのスクリプト（windows/setup.bat・scripts/install.ps1・uninstall.bat・scripts/uninstall.ps1）のテスト
+"""導入とアンインストールのスクリプト（windows/install.bat・scripts/install.ps1・uninstall.bat・scripts/uninstall.ps1）のテスト
 
 Windows PowerShell 5.1 と Windows の部品はこの環境で動かせないので（pwsh で構文の解析と関数の一部は動かせる）、スクリプトの
 文を読んで、決めた動き（止める条件、出す文、アプリの一覧の鍵と値、ショートカットの場所、Python の起動のしかた）を確かめる。
@@ -11,7 +11,15 @@ import re
 from pathlib import Path
 
 import pytest
-from powershell import PWSH, PWSH_MISSING, code_only, parse_errors, ps7_syntax
+from powershell import (
+    PWSH,
+    PWSH_MISSING,
+    code_only,
+    parse_errors,
+    ps7_syntax,
+    run_json,
+    shadowed,
+)
 from test_setup_scripts import NOT_MESSAGES, message_problems, read
 
 from sumikeshi_studio import datadir
@@ -28,6 +36,47 @@ NETWORK = (
     "BitsTransfer",
     "DownloadFile",
 )
+# .bat が使う PowerShell を決める行：決まった場所（%SystemRoot% の下）のものを使い、なければ PATH のフォルダだけから探す
+# （名前だけで起動すると、cmd は今いるフォルダを先に探し、そこに置かれた powershell.exe などが動くため）。%%~$PATH: は
+# PATH のフォルダだけを探す。どちらにもなければ、文を出して 1 で終える
+FIND_POWERSHELL = [
+    "setlocal",
+    'set "SUMIKESHI_POWERSHELL=%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
+    'if not exist "%SUMIKESHI_POWERSHELL%" for %%P in (powershell.exe) do set "SUMIKESHI_POWERSHELL=%%~$PATH:P"',
+    "if not defined SUMIKESHI_POWERSHELL goto missing",
+]
+# 見つからないときの文は、英語の行を先にする（コンソールの文字コードが 65001 のとき、CP932 の行の後の行が正しく読まれる
+# かわからないため）
+POWERSHELL_MISSING = [
+    ":missing",
+    "echo Stopped because Windows PowerShell was not found.",
+    "echo Windows PowerShell が見つからないため、中止しました。",
+    "pause",
+    "exit /b 1",
+]
+
+
+def bat_commands(path: Path) -> list[str]:
+    """.bat のコマンドの行（@echo と rem の行を除く）。改行は CRLF だけ。cmd は .bat をコンソールの文字コードで読むので、
+    ASCII だけで書く。ただし、PowerShell が見つからないときの日本語の文の1行だけは CP932（日本語の Windows で読める
+    ように。2バイト目に cmd の記号を含む字は使わない）。rem の行にも cmd が読む記号を書かない"""
+    data = path.read_bytes()
+    assert data.count(b"\r\n") == data.count(b"\n") > 0
+    lines = data.decode("cp932").split("\r\n")
+    japanese = [s for s in lines if not s.isascii()]
+    assert japanese in ([], [POWERSHELL_MISSING[2]])
+    # その行のバイト列（CP932）に cmd の記号と \ がない（2バイト目がそれに当たる字は、ほかの文字コードのコンソールで
+    # 記号として読まれる）
+    for line in japanese:
+        assert not re.search(rb'[&|<>^%"()!\\]', line.encode("cp932")), line
+    assert not [s for s in lines if s.startswith("rem ") and re.search(r"[<>|&]", s)]
+    commands = [s for s in lines if s and not s.lower().startswith(("@echo", "rem "))]
+    # setlocal は今いるフォルダも保存し、バッチ ファイルを抜けるとき（(goto) を含む）に戻すので、今いるフォルダを
+    # 移すのは (goto) の後
+    for c in commands:
+        if "setlocal" in commands and 'cd /d "%TEMP%"' in c:
+            assert c.index("(goto) 2>nul") < c.index('cd /d "%TEMP%"'), c
+    return commands
 
 
 def script(path: Path = INSTALL) -> str:
@@ -84,6 +133,15 @@ def test_parse_errors_finds_missing_parenthesis(tmp_path):
     assert errors and "MissingEndParenthesis" in " ".join(errors)
 
 
+@pytest.mark.skipif(PWSH is None, reason=PWSH_MISSING)
+@pytest.mark.parametrize("name", ["install.ps1", "uninstall.ps1"])
+def test_scripts_do_not_hide_script_variables(name, tmp_path):
+    """導入とアンインストールのスクリプトの関数は、スクリプト全体の変数（ほかの関数が $script: を付けずに読むもの）と同じ
+    名前を、引数にも代入にも使わない（PowerShell の変数は、呼んだ関数の変数が呼ばれた関数からも見え、名前の大文字・
+    小文字を区別しないので、呼ばれた関数が別の値を読むことになる）"""
+    assert shadowed([WINDOWS / "scripts" / name], tmp_path) == []
+
+
 @pytest.mark.parametrize("name", ["install.ps1", "uninstall.ps1"])
 def test_scripts_use_only_windows_powershell_51_syntax(name):
     """windows/scripts/ の .ps1 は、Windows に標準で入っている Windows PowerShell 5.1 にない演算子（PowerShell 7 で足されたもの）を使わない"""
@@ -110,37 +168,54 @@ def test_ps7_syntax_finds_operators_outside_strings_and_comments():
     assert [f.split("：")[0] for f in found] == [f"{n}行" for n in range(1, 8)]
 
 
-def test_setup_bat_leaves_extracted_folder_before_powershell():
+def test_install_bat_leaves_extracted_folder_before_powershell():
     """入口の .bat は、今いるフォルダを一時的なフォルダにし、(goto) でバッチ ファイルを抜けてから、同じ行で PowerShell を
     起動する（展開したフォルダを移した後に、cmd.exe がバッチ ファイルの続きを読まないように。読みにいくと「The system
     cannot find the path specified.」が出て、終了の番号が 1 になる）。PowerShell を行の最後のコマンドにして、その終了の
     番号をそのまま返す。-Source は末尾の \\ の後に . を付ける。受け取った引数（%*）は、そのまま install.ps1 に渡す。
-    install.ps1 は scripts\\ にある。改行は CRLF"""
-    data = (WINDOWS / "setup.bat").read_bytes()
-    assert data.count(b"\r\n") == data.count(b"\n") > 0
-    commands = [
-        s
-        for s in data.decode("ascii").splitlines()
-        if s and not s.lower().startswith(("@echo", "rem "))
-    ]
+    install.ps1 は scripts\\ にある。改行は CRLF。PowerShell は名前だけで起動しない（FIND_POWERSHELL）。使う PowerShell の
+    パスは、その行を読むとき（(goto) より前）に展開されるので、バッチ ファイルを抜けた後も使える"""
     expected = (
-        'cd /d "%TEMP%" & (goto) 2>nul & powershell -NoProfile -ExecutionPolicy Bypass -File '
+        '(goto) 2>nul & cd /d "%TEMP%" & "%SUMIKESHI_POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File '
         '"%~dp0scripts\\install.ps1" -Source "%~dp0." %*'
     )
-    assert commands == [expected]
-    rems = [s for s in data.decode("ascii").splitlines() if s.startswith("rem ")]
-    assert not [
-        s for s in rems if re.search(r"[<>|&]", s)
-    ]  # rem の行でも cmd が記号を読むことがある
+    assert bat_commands(WINDOWS / "install.bat") == [
+        *FIND_POWERSHELL,
+        expected,
+        *POWERSHELL_MISSING,
+    ]
 
 
-def test_entrance_bat_files_are_setup_and_uninstall():
-    """windows/ の一番上の .bat は、導入の入口の setup.bat、アンインストールの入口の uninstall.bat、起動の start.bat、
-    コマンドラインの sumikeshi.bat の4つ。PowerShell のスクリプトは scripts\\ の install.ps1 と uninstall.ps1 の2つ"""
+def test_start_bat_passes_no_arguments_and_ends_its_cmd():
+    """start.bat は引数を渡さない（開くファイルは、ショートカットか起動の画面にドラッグする。ショートカットは pythonw.exe を
+    直接指すので cmd を通らない）。最後に exit（/b なし）で、自分を動かした cmd を終える。ファイルを start.bat に
+    ドラッグすると、cmd がその名前を読み、引用符のない「&」を含む名前の後ろを、start.bat が終わった後に別のコマンドとして
+    動かすため（引数を渡さないだけでは防げない）"""
+    assert bat_commands(WINDOWS / "start.bat") == [
+        'start "" "%~dp0python\\pythonw.exe" -I -m sumikeshi_studio',
+        "exit",
+    ]
+
+
+def test_elevation_starts_powershell_from_its_own_folder():
+    """管理者権限で起動し直すときは、今動いている PowerShell のフォルダ（$PSHOME）の powershell.exe を起動する（名前だけ
+    だと、探す場所しだいでほかの powershell.exe が動くおそれがあるため）"""
+    for path in (INSTALL, WINDOWS / "scripts" / "uninstall.ps1"):
+        text = script(path)
+        assert (
+            text.count('Start-Process -FilePath (Join-Path $PSHOME "powershell.exe")')
+            == 1
+        ), path
+        assert 'Start-Process -FilePath "powershell.exe"' not in text, path
+
+
+def test_entrance_bat_files_are_install_and_uninstall():
+    """windows/ の一番上の .bat は、導入の入口の install.bat、アンインストールの入口の uninstall.bat、起動の start.bat、
+    コマンドラインの sumikeshi-cli.bat の4つ。PowerShell のスクリプトは scripts\\ の install.ps1 と uninstall.ps1 の2つ"""
     assert sorted(p.name for p in WINDOWS.glob("*.bat")) == [
-        "setup.bat",
+        "install.bat",
         "start.bat",
-        "sumikeshi.bat",
+        "sumikeshi-cli.bat",
         "uninstall.bat",
     ]
     assert sorted(p.name for p in (WINDOWS / "scripts").glob("*.ps1")) == [
@@ -240,6 +315,60 @@ def test_install_stops_on_installed_or_network_source():
     assert "最後まで終わりませんでした（終了の番号 {0}）" in after
 
 
+def test_install_stops_on_drive_root_or_foreign_items_first():
+    """展開したフォルダ（-Source）がドライブの直下か、配布用パッケージにないものがあれば、Python を動かす前（移す・コピー
+    する・消す前）に止める。止める文は、することを先に書く"""
+    main = body(script(), "Invoke-Main")
+    assert (
+        main.index("if (Get-InstalledFolder $Source)")
+        < main.index("if (Test-DriveRoot $Source)")
+        < main.index("$Foreign = Get-ForeignItems $Source")
+        < main.index("$Python = ")
+    )
+    for line in main.splitlines():
+        if "配布用パッケージにないもの" in line or "ドライブの直下" in line:
+            assert 'Msg "ZIP を新しいフォルダに展開し直して' in line
+            assert '"Extract the ZIP again into a new folder' in line
+
+
+@pytest.mark.skipif(PWSH is None, reason=PWSH_MISSING)
+def test_drive_root_and_foreign_items_are_found(tmp_path):
+    """ドライブの直下（末尾の \\ を除いた「E:」の形を含む）を見分け、展開したフォルダの直下の、配布用パッケージにない
+    もの（隠しファイルも）を名前で返す。名前は大文字と小文字を区別しない。UNC のドライブの直下（\\\\server\\share）は、
+    Windows の GetPathRoot で見分ける（この環境では確かめられない）"""
+    text = script()
+    items = next(
+        line for line in text.splitlines() if line.startswith("$PackageItems = ")
+    )
+    ps = (
+        items
+        + "\n"
+        + body(text, "Test-DriveRoot")
+        + body(text, "Get-ForeignItems")
+        + f"$work = '{tmp_path}'\n"
+        + """\
+$package = Join-Path $work "package"
+New-Item -ItemType Directory -Force -Path (Join-Path $package "python"), (Join-Path $package "scripts"), (Join-Path $package "licenses") | Out-Null
+foreach ($n in @("install.bat", "uninstall.bat", "start.bat", "sumikeshi-cli.bat", "README-ja.txt", "README-en.txt", "VERSION.TXT")) { Set-Content -LiteralPath (Join-Path $package $n) "x" }
+$clean = @(Get-ForeignItems $package)
+Set-Content -LiteralPath (Join-Path $package "user.xlsx") "x"
+Set-Content -LiteralPath (Join-Path $package ".hidden") "x"
+New-Item -ItemType Directory -Force -Path (Join-Path $package "old_forms") | Out-Null
+[ordered]@{
+    roots = @(@("/", "E:", "e:", (Join-Path $work "x"), $package) | ForEach-Object { Test-DriveRoot $_ })
+    clean = $clean
+    foreign = @(Get-ForeignItems $package | Sort-Object)
+} | ConvertTo-Json -Depth 3 -Compress
+"""
+    )
+    got = run_json(ps, tmp_path / "pwsh")
+    assert got == {
+        "roots": [True, True, True, False, False],
+        "clean": [],
+        "foreign": [".hidden", "old_forms", "user.xlsx"],
+    }
+
+
 def test_install_kinds_do_their_own_steps():
     """自分だけ：自分のプロセスを見て、同じドライブなら移動（UNC と別のドライブはコピー）、HKCU、その利用者の
     デスクトップとスタートメニュー、サンプルの様式の問い（名前と年分）。すべてのユーザー：PC 全体のプロセスを見て、
@@ -285,6 +414,115 @@ def test_install_files_keep_previous_until_new_is_in():
     assert "Win32_Process" in users and "GetOwner" in users and "Get-Process" in users
 
 
+@pytest.mark.skipif(PWSH is None, reason=PWSH_MISSING)
+def test_update_leaves_no_files_of_previous_version(tmp_path):
+    """更新では、導入先のフォルダを新しいものに置き換えるので、前のバージョンにだけあったファイル（0.3.1 までの入口の
+    setup.bat・sumikeshi.bat）は導入先に残らない。移動でもコピーでも同じで、.old・.new も残らない"""
+    text = script()
+    msg = next(line for line in text.splitlines() if line.startswith("function Msg("))
+    ps = (
+        f"$Lang = 'ja'\n{msg}\n"
+        + body(text, "Install-Files")
+        + body(text, "Remove-Old")
+        + f"$work = '{tmp_path}'\n"
+        + """\
+$result = [ordered]@{}
+foreach ($move in @($true, $false)) {
+    $base = Join-Path $work ("move_" + $move)
+    $Dir = Join-Path $base "SumikeshiStudio"
+    $Source = Join-Path $base "sumikeshi-studio"
+    New-Item -ItemType Directory -Force -Path $Dir, $Source | Out-Null
+    foreach ($n in @("setup.bat", "sumikeshi.bat", "start.bat")) { Set-Content -LiteralPath (Join-Path $Dir $n) "old" }
+    foreach ($n in @("install.bat", "sumikeshi-cli.bat", "start.bat")) { Set-Content -LiteralPath (Join-Path $Source $n) "new" }
+    $ok = Install-Files $Dir $move
+    Remove-Old $Dir
+    $result["$move"] = [ordered]@{
+        ok = $ok
+        files = @(Get-ChildItem -LiteralPath $Dir -Name | Sort-Object)
+        start = (Get-Content -LiteralPath (Join-Path $Dir "start.bat"))
+        leftovers = @(@("$Dir.old", "$Dir.new") | Where-Object { Test-Path -LiteralPath $_ }).Count
+    }
+}
+$result | ConvertTo-Json -Depth 4 -Compress
+"""
+    )
+    got = run_json(ps, tmp_path / "pwsh")
+    for move in ("True", "False"):
+        assert got[move] == {
+            "ok": True,
+            "files": ["install.bat", "start.bat", "sumikeshi-cli.bat"],
+            "start": "new",
+            "leftovers": 0,
+        }, move
+
+
+@pytest.mark.skipif(PWSH is None, reason=PWSH_MISSING)
+def test_update_uses_kind_of_previous_installation(tmp_path):
+    """このアカウントから見て前のインストール（アプリの一覧の鍵か、インストール先のフォルダ）が見つかれば、種類を
+    尋ねずに同じ種類を答えにし、そのことを1行出す。どちらもないときと両方あるときは、-Kind のまま（空なら尋ねる。
+    両方あるときは、選んだ種類の確かめで止まる）。-Kind が見つかった種類と違えば、-Kind のまま返し、1行も出さない
+    （選んだ種類の確かめで、何も変えずに止まる）。アプリの一覧の鍵は、HKCU・HKLM の名前のドライブをフォルダで作って
+    見立てる"""
+    text = script()
+    msg = next(line for line in text.splitlines() if line.startswith("function Msg("))
+    ps = (
+        f"$Lang = 'ja'\n{msg}\n"
+        + body(text, "Get-InstalledKind")
+        + body(text, "Get-KindAnswer")
+        + f"$work = '{tmp_path}'\n"
+        + """\
+$UninstallKey = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\SumikeshiStudio"
+$states = [ordered]@{
+    none = @(); per_user_dir = @("per_user_dir"); per_user_key = @("hkcu"); all_users_dir = @("all_users_dir")
+    all_users_key = @("hklm"); both = @("per_user_dir", "hklm")
+}
+$result = [ordered]@{}
+foreach ($state in $states.Keys) {
+    $base = Join-Path $work $state
+    $PerUserDir = Join-Path $base "Programs\\SumikeshiStudio"
+    $AllUsersDir = Join-Path $base "Program Files\\SumikeshiStudio"
+    foreach ($hive in @("HKCU", "HKLM")) {
+        $root = Join-Path $base $hive
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+        if (Get-PSDrive -Name $hive -ErrorAction SilentlyContinue) { Remove-PSDrive -Name $hive }
+        New-PSDrive -Name $hive -PSProvider FileSystem -Root $root | Out-Null
+    }
+    foreach ($item in $states[$state]) {
+        $path = @{ per_user_dir = $PerUserDir; all_users_dir = $AllUsersDir; hkcu = "HKCU:\\$UninstallKey"; hklm = "HKLM:\\$UninstallKey" }[$item]
+        New-Item -ItemType Directory -Force -Path $path | Out-Null
+    }
+    foreach ($Kind in @("", "1", "2")) {
+        $items = @(Get-KindAnswer 6>&1)
+        $lines = @($items | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { [string]$_.MessageData })
+        $answer = (@($items | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] }) -join "")
+        $result["$state/$Kind"] = [ordered]@{ answer = $answer; lines = $lines }
+    }
+}
+$result | ConvertTo-Json -Depth 4 -Compress
+"""
+    )
+    got = run_json(ps, tmp_path / "pwsh")
+    per_user = (
+        "このアカウントには自分だけの墨消しスタジオがあるので、同じ種類で更新します。"
+    )
+    all_users = (
+        "すべてのユーザー向けにインストールされているので、同じ種類で更新します。"
+    )
+    expected = {}
+    for state in ("none", "both"):
+        for kind in ("", "1", "2"):
+            expected[f"{state}/{kind}"] = {"answer": kind, "lines": []}
+    for state in ("per_user_dir", "per_user_key"):
+        expected[f"{state}/"] = {"answer": "1", "lines": [per_user]}
+        expected[f"{state}/1"] = {"answer": "1", "lines": [per_user]}
+        expected[f"{state}/2"] = {"answer": "2", "lines": []}
+    for state in ("all_users_dir", "all_users_key"):
+        expected[f"{state}/"] = {"answer": "2", "lines": [all_users]}
+        expected[f"{state}/2"] = {"answer": "2", "lines": [all_users]}
+        expected[f"{state}/1"] = {"answer": "1", "lines": []}
+    assert got == expected
+
+
 def test_install_starts_python_isolated_and_elevates_itself():
     """Python は -I で起動し、展開した場所で動かすとき（起動と部品の確認）は -B で .pyc を書かない。問いを出す
     Python は、出力を取り込まずに同じコンソールで動かす。すべてのユーザー向けは、言語と -NoWait を渡して管理者権限で
@@ -327,8 +565,8 @@ def ending(text: str) -> str:
 
 def test_install_takes_answers_as_arguments():
     """-Kind・-Samples・-NoWait を受け取る。値は、何をするより先に決まりに合うかを確かめ、合わなければ文を出して止める
-    （既定の答えにしない）。-Kind は種類の問いの答えになるだけで（渡さなければ今のまま尋ねる）、管理者権限の確かめや
-    起動し直しは変わらない。-Samples は forminstall に --samples で渡す。-NoWait なら、終わるときに Enter を待たない"""
+    （既定の答えにしない）。-Kind は種類の問いの答えになるだけで（渡さなければ、前のインストールの種類か、尋ねた答え）、
+    管理者権限の確かめや起動し直しは変わらない。-Samples は forminstall に --samples で渡す。-NoWait なら、終わるときに Enter を待たない"""
     text = script()
     head = text[: text.index("$ErrorActionPreference")]
     for line in ('[string]$Kind = ""', '[string]$Samples = ""', "[switch]$NoWait"):
@@ -348,9 +586,8 @@ def test_install_takes_answers_as_arguments():
     assert max(main.index(c) for c in checks) < main.index("Get-InstalledFolder")
     assert [s.strip() for s in main.splitlines() if "$Kind" in s] == [
         'if (-not (Test-Choice "Kind" $Kind @("1", "2"))) { return }',
-        "$Choice = $Kind",
     ]
-    assert main.index("$Choice = $Kind") < main.index("while ($Choice -notin")
+    assert main.index("$Choice = Get-KindAnswer") < main.index("while ($Choice -notin")
     assert (
         'if ($Samples) { $FormArguments += @("--samples", $Samples.ToLower()) }'
         in body(text, "Install-PerUser")
@@ -376,7 +613,7 @@ def test_uninstall_takes_answers_as_arguments():
         assert f"if (-not ({check})) {{ return }}" in main
     assert max(main.index(c) for c in checks) < main.index("Test-SamePath $Here")
     assert "if (-not $Yes -and -not (Read-Yes ((Msg" in main
-    assert 'if ($DeleteData) { $RemoveData = $DeleteData -eq "y" } else {' in main
+    assert 'if ($DeleteData) { $RemoveData = $DeleteData -eq "y" } elseif' in main
     order = ["if ($DeleteData)", "$RemoveData = Read-Yes", "-Verb RunAs"]
     assert [main.index(s) for s in order] == sorted(main.index(s) for s in order)
     assert '"-Elevated", "-Language", $Lang)' in main
@@ -398,24 +635,19 @@ SHARED = (
 
 
 def test_uninstall_messages_and_bat():
-    """アンインストールが出す文は、すべて Msg の形。uninstall.bat は setup.bat と同じ形の1行（アンインストールも、
+    """アンインストールが出す文は、すべて Msg の形。uninstall.bat は install.bat と同じ形の1行（アンインストールも、
     自分の入った導入先のフォルダの名前を変えて消すので、(goto) でバッチ ファイルを抜けてから PowerShell を起動する）で、
     受け取った引数をそのまま scripts\\ の uninstall.ps1 に渡す"""
     assert message_problems(script(UNINSTALL), ALLOWED) == []
-    data = (WINDOWS / "uninstall.bat").read_bytes()
-    assert data.count(b"\r\n") == data.count(b"\n") > 0
-    commands = [
-        s
-        for s in data.decode("ascii").splitlines()
-        if s and not s.lower().startswith(("@echo", "rem "))
-    ]
     expected = (
-        'cd /d "%TEMP%" & (goto) 2>nul & powershell -NoProfile -ExecutionPolicy Bypass -File '
+        '(goto) 2>nul & cd /d "%TEMP%" & "%SUMIKESHI_POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File '
         '"%~dp0scripts\\uninstall.ps1" %*'
     )
-    assert commands == [expected]
-    rems = [s for s in data.decode("ascii").splitlines() if s.startswith("rem ")]
-    assert not [s for s in rems if re.search(r"[<>|&]", s)]
+    assert bat_commands(WINDOWS / "uninstall.bat") == [
+        *FIND_POWERSHELL,
+        expected,
+        *POWERSHELL_MISSING,
+    ]
 
 
 def test_shared_functions_are_the_same_in_both_scripts():
@@ -582,4 +814,65 @@ def test_uninstall_reads_forms_folder_with_the_same_rules():
     assert f'$DefaultForms = Join-Path $Data "{formstore.DEFAULT_FOLDER}"' in main
     assert main.index("Read-FormsFolder") < main.index("$RemoveData = Read-Yes")
     assert "は、既定の場所でないので削除しません。" in main
-    assert "選んでいたときは、そのフォルダは削除しません。" in main
+
+
+@pytest.mark.skipif(PWSH is None, reason=PWSH_MISSING)
+def test_uninstall_tells_forms_folder_in_data_is_deleted(tmp_path):
+    """起動の画面で選んだ様式のフォルダの場所の種類（Get-FormsPlace）：既定の場所でなくても、データか設定のフォルダ
+    （%LOCALAPPDATA%・%APPDATA% の SumikeshiStudio）か、その中にあれば、データと一緒に削除される「inside」にする。
+    このときは「削除しません」と出さず、データを削除するかの問いの文に、その様式のフォルダを入れる。設定のファイルを
+    読めないときは、どちらの場合もありうることを示す"""
+    text = script(UNINSTALL)
+    data, settings = (
+        r"C:\Users\a\AppData\Local\SumikeshiStudio",
+        r"C:\Users\a\AppData\Roaming\SumikeshiStudio",
+    )
+    cases = {
+        "選んでいない": "",
+        "既定の場所": data + r"\forms",
+        "既定の場所（大文字と末尾の区切り）": data.upper() + "\\FORMS\\",
+        "データのフォルダの中": data + r"\forms2",
+        "データのフォルダそのもの": data,
+        "設定のフォルダの中": settings + r"\様式",
+        "名前が似た別のフォルダ": data + r"2\forms",
+        "共有フォルダ": r"\\server\share\forms",
+        "パスとして読めない値": "C:\\a|b",
+    }
+    functions = "\n".join(
+        body(text, name)
+        for name in (
+            "Test-Under",
+            "Test-SamePath",
+            "Test-SamePathQuietly",
+            "Get-FormsPlace",
+        )
+    )
+    # 既定の場所は、Invoke-Main が Join-Path $Data "forms" で決めて渡す（この環境の pwsh の Join-Path は / でつなぐので、
+    # Windows と同じ \ でつないだものを渡す）
+    places = f"'{data}\\forms' '{data}' '{settings}'"
+    calls = "; ".join(
+        f"$r['{k}'] = Get-FormsPlace '{v}' {places}" for k, v in cases.items()
+    )
+    ps = f"{functions}\n$r = [ordered]@{{}}; {calls}; $r['読めない'] = Get-FormsPlace $null {places}\n$r | ConvertTo-Json"
+    got = run_json(ps, tmp_path / "pwsh")
+    assert got == {
+        "選んでいない": "default",
+        "既定の場所": "default",
+        "既定の場所（大文字と末尾の区切り）": "default",
+        "データのフォルダの中": "inside",
+        "データのフォルダそのもの": "inside",
+        "設定のフォルダの中": "inside",
+        "名前が似た別のフォルダ": "outside",
+        "共有フォルダ": "outside",
+        "パスとして読めない値": "outside",
+        "読めない": "unknown",
+    }
+    main = body(text, "Invoke-Main")
+    # 「削除しません」の文は outside のときだけ。inside のときは、問いの文に様式のフォルダを入れる
+    outside = main.index('elseif ($Place -eq "outside")')
+    assert main.index("は、既定の場所でないので削除しません。") > outside
+    inside = main.index('elseif ($Place -eq "inside")')
+    assert (
+        "起動の画面で選んだ様式のフォルダ {2} を含む）も削除しますか？" in main[inside:]
+    )
+    assert "か {1} の中にあれば削除し、ほかの場所にあれば削除しません。" in main

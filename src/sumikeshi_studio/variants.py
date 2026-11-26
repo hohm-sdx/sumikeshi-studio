@@ -33,7 +33,7 @@ from typing import NamedTuple
 import cv2
 import numpy as np
 
-from . import align, frames, rulings
+from . import align, frames, paper, rulings
 from .formstore import (
     LINE_MATCH_MAX,
     LINE_MATCH_MIN,
@@ -734,6 +734,35 @@ def locate(
 def page_model(gray: np.ndarray) -> Model | None:
     """向きと傾きを直したページ画像 gray から読んだ罫線と、罫線に入れなかった線（横か縦の罫線が読めなければ None）"""
     return model(rulings.read_all(gray))
+
+
+def page_quad(spec: FormSpec, pm: Model, gray: np.ndarray | None = None) -> np.ndarray:
+    """様式 spec の見本の用紙の四隅を、見本の罫線のある範囲をページの罫線 pm の範囲に移す1次の写像で、作業画像の上に
+    移したもの（4×2。align.page_quad と同じ並び）
+
+    作業画像 gray を渡すと、各辺を、ページの罫線のある範囲の辺から外へ続く、その帳票の余白の印刷の外の端まで広げる
+    （見本の余白の位置より外なら。paper.print_band）。帯をたどる空白の幅は、移した見本のその辺の余白の幅。余白や表の外の
+    印刷が見本と違う用紙（見本にない、表の外の縦の文など）では、その用紙自身の印刷が、見本の余白の位置の外に出るため。
+    広げた幅（高さ）が見本の用紙の大きさ（spec.size。作業画像と同じ 200dpi の画素）を超える向きは広げない。罫線の対応で
+    置き直すのはスキャンと PDF のページで、作業画像は用紙の実際の大きさなので、1枚の用紙の印刷は用紙の大きさに収まる。
+    超えるのは、ほかの用紙（帳票の余白に重ねて写った文書など）まで、その帳票の印刷とみなしたとき"""
+    tm = template_model(spec)
+    fx, fy = _linear(tm.box, pm.box, 0), _linear(tm.box, pm.box, 1)
+    w, h = spec.size
+    left, top, right, bottom = fx(0), fy(0), fx(w), fy(h)
+    if gray is not None:
+        x0, y0, x1, y1 = pm.box
+        gaps = (x0 - left, y0 - top, right - x1, bottom - y1)
+        bl, bt, br, bb = paper.print_band(
+            gray, pm.box, tuple(max(g, 0.0) for g in gaps)
+        )
+        wide = (min(left, bl), min(top, bt), max(right, br), max(bottom, bb))
+        # 広げた幅（高さ）が見本の用紙の大きさを超える向きは広げない
+        if wide[2] - wide[0] <= w:
+            left, right = wide[0], wide[2]
+        if wide[3] - wide[1] <= h:
+            top, bottom = wide[1], wide[3]
+    return np.float32([[left, top], [right, top], [right, bottom], [left, bottom]])
 
 
 def placed_shift(spec: FormSpec, pm: Model, fields: Sequence[Field]) -> float:

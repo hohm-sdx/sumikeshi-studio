@@ -153,6 +153,9 @@ class MainWindow(QMainWindow):
         self.pending: OpenRequest | None = None
 
         self.view = PageView()
+        self.view.move_corners = (
+            True  # 角のドラッグで、どの範囲もその角だけを動かす（Shift なら長方形）
+        )
         # 作業画像のキャッシュ（予算は、ファイルを開くときの空いているメモリで決める）。描き直しを頼んでいるページと、
         # 先に描いておくために頼んでいるページ（一度に1ページだけ頼む。表示しているページの描き直しを待たせないため）
         self.cache = workcache.WorkCache(workcache.MIN_BUDGET)
@@ -578,6 +581,7 @@ class MainWindow(QMainWindow):
         st = self.pages[index]
         if result is not None and self.forms is not None:
             result = result.sharing(self.forms.active)
+        st.source = review.with_result_dpi(st.source, result)
         if result is not None and result.work is not None:
             # 作業画像はキャッシュに持ち、解析の結果には高さ・幅だけを残す（予算を超えれば手放す）
             self.cache.drop(index)

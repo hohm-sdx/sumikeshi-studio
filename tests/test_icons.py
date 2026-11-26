@@ -1,13 +1,11 @@
 # Copyright (C) 2026 Hideki Ohmura
 # SPDX-License-Identifier: AGPL-3.0-only
-"""ツールのアイコン：元の絵（SVG）と作ったファイル（.ico・PNG）が合っていること、画面とショートカットでの使い方"""
+"""ツールのアイコン：アイコンのファイル（.ico）の形、大きさごとの絵、画面とショートカットでの使い方"""
 
 import importlib.util
 import struct
 from pathlib import Path
 
-import numpy as np
-import pytest
 from gui import QtWidgets
 
 from sumikeshi_studio import appicon
@@ -28,70 +26,14 @@ def pixels(data: bytes):
     return (image.width(), image.height()), bytes(image.constBits())
 
 
-# 描いた絵を乗算済みの色から戻すとき（Format_ARGB32_Premultiplied → ARGB32）、値がちょうど .5 になる画素は、
-# 環境によって丸めが1違うことがある（同じ SVG から、色が 42 と 43 の画素ができた）
-COLOR_TOLERANCE = 1
-
-
-def argb(data: bytes) -> np.ndarray:
-    """ARGB32 の画素の並び（1画素を 0xAARRGGBB の32ビットの整数としてリトルエンディアンで並べたもの）を、画素ごとの
-    A・R・G・B の配列にする"""
-    value = np.frombuffer(data, dtype="<u4")
-    return np.stack([(value >> s) & 0xFF for s in (24, 16, 8, 0)], axis=1).astype(int)
-
-
-def assert_same_pixels(have: bytes, want: bytes, name) -> None:
-    """2つの ARGB32 の画素の並びが、透明度は同じで、色（R・G・B）は各 COLOR_TOLERANCE 以内"""
-    a, b = argb(have), argb(want)
-    assert a.shape == b.shape, name
-    assert np.array_equal(a[:, 0], b[:, 0]), f"{name}：透明度が違う"
-    diff = int(np.abs(a[:, 1:] - b[:, 1:]).max(initial=0))
-    assert diff <= COLOR_TOLERANCE, f"{name}：色の差が {diff}"
-
-
-def assert_same_png(have: bytes, want: bytes, name) -> None:
-    (have_size, have_bits), (want_size, want_bits) = pixels(have), pixels(want)
-    assert have_size == want_size, name
-    assert_same_pixels(have_bits, want_bits, name)
-
-
-def assert_same_dib(have: bytes, want: bytes, size: int) -> None:
-    """アイコンのファイルの DIB：ヘッダーと透明の印は同じで、色は assert_same_pixels の差まで"""
-    end = 40 + size * size * 4
-    assert have[:40] == want[:40] and have[end:] == want[end:], size
-    assert_same_pixels(have[40:end], want[40:end], size)
-
-
-@pytest.fixture(scope="module")
-def built():
-    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    return make_icons.build()
-
-
-def test_icon_files_match_svg(built):
-    """リポジトリの PNG とアイコンのファイルは、元の絵の SVG から tools/make_icons.py で作ったものと、画素が同じ（色は
-    COLOR_TOLERANCE まで違ってよい）"""
-    for path, data in built.items():
-        assert path.is_file(), path
-        if path.suffix == ".png":
-            assert_same_png(path.read_bytes(), data, path.name)
-    have = make_icons.ico_entries(appicon.ICO_PATH.read_bytes())
-    want = make_icons.ico_entries(built[appicon.ICO_PATH])
-    assert [s for s, _ in have] == list(appicon.SIZES)
-    for (size, got), (_, expected) in zip(have, want, strict=True):
-        if size >= make_icons.PNG_MIN:
-            assert pixels(got)[0] == (size, size)
-            assert_same_png(got, expected, size)
-        else:
-            assert_same_dib(got, expected, size)
-
-
 def test_ico_entries_are_dib_below_256_and_read_like_png():
-    """アイコンのファイルの256画素は PNG の形、それより小さい大きさは DIB（32ビットの色と透明）の形で入る。別の読み手
-    （Pillow）で読んでも、どの大きさも、同じ大きさの PNG と画素が同じ"""
+    """アイコンのファイルには SIZES の大きさの絵が入り、256画素は PNG の形、それより小さい大きさは DIB（32ビットの色と
+    透明）の形で入る。別の読み手（Pillow）で読んでも、どの大きさも、同じ大きさの PNG と画素が同じ"""
     from PIL import Image
 
-    for size, data in make_icons.ico_entries(appicon.ICO_PATH.read_bytes()):
+    entries = make_icons.ico_entries(appicon.ICO_PATH.read_bytes())
+    assert [size for size, _ in entries] == list(appicon.SIZES)
+    for size, data in entries:
         if size >= 256:
             assert data[:8] == b"\x89PNG\r\n\x1a\n"
         else:
@@ -129,10 +71,13 @@ def test_small_sizes_use_small_drawing():
         *(["sumikeshi-studio-small.svg"] * 4),
         *(["sumikeshi-studio.svg"] * 4),
     ]
-    # 大きさごとに、その大きさで描いた絵が入る（縮めた絵ではない）
+    # make_icons が作る32画素の PNG は、小さい大きさ用の絵をその大きさで描いたもの（縮めた絵でも、大きい大きさ用の絵でも
+    # ない）。どれも同じ環境で描いて比べる（リポジトリの画像とは比べない。描いた絵は Qt のバージョンや CPU で1画素ずれる
+    # ことがあるため）
     small = make_icons.png_data(make_icons.render(make_icons.SMALL, 32))
     large = make_icons.png_data(make_icons.render(make_icons.LARGE, 32))
-    assert_same_png(appicon.png_path(32).read_bytes(), small, 32)
+    built = make_icons.build()[appicon.png_path(32)]
+    assert pixels(built) == pixels(small)
     assert pixels(small) != pixels(large)
 
 

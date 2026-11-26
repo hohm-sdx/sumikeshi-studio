@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 import cv2
 import numpy as np
 
-from . import align, forms, ocr, paper, titles
+from . import align, forms, ocr, paper, rulings, titles
 from .formstore import TEMPLATE_SCALE, Field, FormSpec, frame_pairs, title_key
 from .i18n import tr
 
@@ -279,9 +279,11 @@ def line_angle_spread(work: np.ndarray) -> float:
         m = cv2.morphologyEx(
             ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, k)
         )
-        n, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+        # 番号の画像は16ビットで求める（写真のページで、32ビットの番号の画像が解析の中の最大のメモリを押し上げるため）
+        labels, stats = rulings.components(m)
+        del m
         angles = []
-        for i in range(1, n):
+        for i in range(1, len(stats)):
             x, y, w, h, _ = stats[i]
             length, thick = (w, h) if horizontal else (h, w)
             if length < minlen or thick > DISTORT_MAX_T:
@@ -297,7 +299,10 @@ def line_angle_spread(work: np.ndarray) -> float:
 def distorted(work: np.ndarray) -> bool:
     """写真などで用紙が歪んでいるようか（DISTORT_SPREAD・DISTORT_PAPER）"""
     region = paper.paper_region(work)
-    if region is not None and float(region.mean()) < DISTORT_PAPER:
+    # 用紙の割合を先に数にして、線の傾きを求めるあいだ、用紙の部分の配列を持たない（解析の中の最大のメモリを増やさない）
+    share = float(region.mean()) if region is not None else None
+    del region
+    if share is not None and share < DISTORT_PAPER:
         return True
     return line_angle_spread(work) >= DISTORT_SPREAD
 

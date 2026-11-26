@@ -44,5 +44,13 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: 環境を作る
         run: uv sync --locked
+      # 回帰テストの記録は AVX2 のある CPU で作ったもので、AVX2 のない CPU では結果が変わることがある。落ちたときに原因を
+      # 見分けられるよう、CPU の名前と、AVX2・AVX-512 の有無を出す
+      - name: CPU（名前と AVX2・AVX-512 の有無）
+        run: |
+          lscpu | grep -E '^Model name:' || true
+          for flag in avx2 avx512f; do
+            if grep -qw "$flag" /proc/cpuinfo; then echo "$flag: あり"; else echo "$flag: なし"; fi
+          done
       - name: テスト
         run: uv run pytest -n 4 -m "regression or not regression" -rs

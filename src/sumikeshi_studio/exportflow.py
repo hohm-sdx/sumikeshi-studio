@@ -106,9 +106,7 @@ class ExportFlow:
         dialog.setMinimumDuration(0)
         results: list[str] = []
         problems: list[bool] = []
-        th = Exporter(
-            jobs, lambda: self.window.analyzer.executor
-        )  # 墨消しする処理は解析のプロセスで
+        th = Exporter(jobs, self.window.analyzer.masker)  # 墨消しする処理は解析のプロセスで
         th.progress.connect(
             lambda d, n, m: (dialog.setValue(d), dialog.setLabelText(m))
         )

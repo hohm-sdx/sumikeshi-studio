@@ -34,11 +34,12 @@ def test_japanese_and_english_readmes_have_same_headings():
 
 
 def test_readmes_link_to_each_other_at_top():
-    """日本語版の冒頭に英語版へのリンクを、英語版の冒頭に日本語版へのリンクを置く"""
-    ja = (ROOT / "README.md").read_text("utf-8").splitlines()[:5]
-    en = (ROOT / "README.en.md").read_text("utf-8").splitlines()[:5]
-    assert any("](README.en.md)" in line for line in ja)
-    assert any("](README.md)" in line for line in en)
+    """日本語版と英語版の冒頭（デモの動画の後）に、言語を切り替える行を置く。今の言語はリンクにせず、もう一方の言語の
+    README へのリンクにする"""
+    ja = (ROOT / "README.md").read_text("utf-8").splitlines()
+    en = (ROOT / "README.en.md").read_text("utf-8").splitlines()
+    assert ja[3:5] == ["", "[English](README.en.md) | 日本語"]
+    assert en[3:5] == ["", "English | [日本語](README.md)"]
 
 
 def test_readmes_show_demo_at_top():

@@ -67,7 +67,7 @@ def test_blocked_parts_and_report(tmp_path):
         f"{head}ツールが使う次の部品を止めました。このままでは、ツールは起動しないか、途中で止まります。"
         + "この画面のスクリーンショットを撮っておくと、原因の調査に役立つ場合があります。",
         "・numpy：libscipy_openblas64_-ed4f.dll",
-        f"{head}ツールが使わない次の部品を止めました。ツールの動きには影響しません。",
+        f"{head}次の部品を止めました。解析と出力では使わない部品なので、ツールの動作には影響しない見込みです。",
         "・numpy：mtrand.cp314-win_amd64.pyd",
     ]
     unused = [p for p in blocked if p.name.startswith("mtrand")]
@@ -86,7 +86,7 @@ def test_policy_message():
     error = f"ImportError: DLL load failed while importing _multiarray_umath: {BLOCKED_TEXT}"
     assert nativecheck.policy_message(error) == (
         "Windows のスマート アプリ コントロール（または会社のアプリケーション制御）が、ツールの部品"
-        "（_multiarray_umath）を止めました。配布用パッケージの ZIP を展開して setup.bat を実行すると、"
+        "（_multiarray_umath）を止めました。配布用パッケージの ZIP を展開して install.bat を実行すると、"
         "止められた部品の名前が出ます。"
         "この画面のスクリーンショットを撮っておくと、原因の調査に役立つ場合があります。"
     )
@@ -178,8 +178,8 @@ def test_texts_in_english(tmp_path, monkeypatch, capsys):
         ),
         "- Python: _ctypes.pyd",
         (
-            "Windows Smart App Control (or your organization's application control) blocked the following components "
-            "that the tool does not use. This does not affect how the tool works."
+            "Windows Smart App Control (or your organization's application control) blocked the following components. "
+            "These components are not used for analysis or export, so the tool is expected to work normally."
         ),
         "- numpy: mtrand.cp314-win_amd64.pyd",
     ]

@@ -5,7 +5,9 @@
 import dataclasses
 import sys
 import threading
+from pathlib import Path
 
+import pytest
 from conftest import cached_analyze
 from gui import (
     Qt,
@@ -51,6 +53,82 @@ from sumikeshi_studio import (
 from sumikeshi_studio.boxes import Source
 
 # ---------------------------------------------------------------- 様式
+
+
+def inflating_png() -> bytes:
+    """見出し（IHDR）は 8×8 画素のグレーで、画像のデータ（IDAT）を展開すると 8MB になる PNG（OpenCV で展開すると、
+    大きなものでは数十秒かかる形）"""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(body))
+            + kind
+            + body
+            + struct.pack(">I", zlib.crc32(kind + body))
+        )
+
+    ihdr = struct.pack(">IIBBBBB", 8, 8, 8, 0, 0, 0, 0)
+    data = zlib.compress(bytes(8 * 1024**2), 9)
+    return (
+        formstore.PNG_SIGNATURE
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", data)
+        + chunk(b"IEND", b"")
+    )
+
+
+def test_template_image_is_checked_as_png_before_decoding(tmp_path, monkeypatch):
+    """様式の編集の画面で見本の画像を読むとき（formlist.read_template）も、解析（align）と同じく、読んだ同じバイト列を
+    PNG として最後まで確かめてから OpenCV に渡す。様式の一覧を読んだ後に、中身が JPEG 2000 の画像、見出しの幅が上限を
+    超える PNG、展開した大きさが見出しから決まる大きさを超える PNG、IHDR の途中で切れた PNG に置き換わった見本の画像は、
+    OpenCV に渡さずに「画像として読めません」にする"""
+    import cv2
+    from userforms import png_bytes
+
+    from sumikeshi_studio import align, formlist
+
+    write_form(tmp_path, "u-0001", "置き換わる様式")
+    (spec,) = formstore.load(formstore.FolderChoice(tmp_path)).active
+    decoded = []
+    real = cv2.imdecode
+    monkeypatch.setattr(
+        cv2, "imdecode", lambda *a, **k: decoded.append(1) or real(*a, **k)
+    )
+    replaced = {
+        "JPEG 2000": (
+            Path(__file__).parent / "data" / "試験_中身がJPEG2000.jpg"
+        ).read_bytes(),
+        "幅が上限を超える PNG": png_bytes(formstore.MAX_IMAGE_SIDE + 1, 1),
+        "展開した大きさが見出しの大きさを超える PNG": inflating_png(),
+        "IHDR の途中で切れた PNG": png_bytes(10, 10)[:20],
+    }
+    for label, data in replaced.items():
+        spec.image_path().write_bytes(data)
+        for read in (formlist.read_template, lambda s: align.templates([s])):
+            with pytest.raises(
+                formstore.FormError,
+                match="様式「置き換わる様式」の見本の画像を、画像として読めません",
+            ):
+                read(spec)
+        assert decoded == [], label
+
+
+def test_unreadable_template_image_is_told_once(window, tmp_path):
+    """「編集」で範囲を描く画面を開くときに見本の画像を読めなければ、読めない理由の文を1つだけ示し、同じ趣旨の文を
+    重ねない"""
+    folder = use_forms_folder(tmp_path)
+    dlg = list_dialog(window)
+    select(dlg, "nta-hoken-r8")
+    (image,) = folder.glob("nta-hoken-r8*.png")
+    image.unlink()  # 様式の一覧を読んだ後に、共有フォルダにつながらなくなった
+    dlg.edit()
+    wait(window, lambda: not dlg.busy)
+    assert (
+        window.shown[-1]
+        == f"様式「保険料控除申告書」の見本の画像を読めません。（{image}）"
+    )
 
 
 def test_unreadable_forms_block_opening(window, files, tmp_path):

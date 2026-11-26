@@ -7,6 +7,11 @@
 Windows がジョブの中のプロセスを終わらせる。プロセスの名前や番号（pid）で探して終わらせることはしない（ツールを
 2つ起動したときに、もう片方を巻き込まないため。pid は Windows が使い回すことがある）。
 
+解析のプロセスは、立ち上げるときに、確保できるメモリを ANALYSIS_MEMORY_LIMIT に限るジョブにも入る（limit_memory。
+画面のプロセスのジョブの中に入れ子にする。入れ子のジョブは Windows 8 から）。細工した PDF で PDFium が部品を展開し
+続けても、PC 全体の空きメモリを使い切る前に、そのプロセスの確保が失敗して終わる（そのページは処理できないページに
+なる）。画面のプロセスには上限を付けない。
+
 注意：ジョブに入ったツールから別のプログラム（例：出力した PDF を開くビューア）を起動すると、そのプログラムも
 ツールと一緒に終わる。そうした機能を足すときは、ジョブから外して起動する（CreateProcess の
 CREATE_BREAKAWAY_FROM_JOB と、ジョブの JOB_OBJECT_LIMIT_BREAKAWAY_OK）。
@@ -19,6 +24,17 @@ import sys
 from ctypes import wintypes
 
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x100
+# 解析のプロセス1つが確保できるメモリ（バイト。ジョブの上限は、プロセスがコミットしたメモリで数える）。開発の環境
+# （Linux・論理 CPU 8）で測った、解析のプロセスと同じ関数を動かしたプロセスの物理メモリの最大（VmHWM）：画素の数が
+# 上限（imaging.MAX_PIXELS）の 99.98% の、向き6（右に90度回して見る）のカラーの JPEG（16,384×10,920画素）を出力で
+# 墨消しすると、OCR を用意した後で約2.0GB（元の解像度で読んで向きを直すため。傾きを直すときも同じ）。同じ画像の解析は
+# 約0.4GB、ふつうのページ（架空の記入の4ページの PDF）の解析は約0.5GB。上限は、出力の約1.5倍。コミットは、物理
+# メモリに載った分に、確保しただけで使っていない分を足したもので、その差は測っていない（Windows の試験用の仮想マシンの
+# 画面の操作の確認の A9 で、同じ画像のコミットの最大を測る）。Linux のデータの領域（VmData）はスレッドのスタックの予約も
+# 数え、論理 CPU の数で増えるが、Windows のスタックは使った分だけをコミットするので、論理 CPU の多い PC でも、上限に
+# 近づく量は小さい見込み（推測）。上限を超えたページは、処理できないページになる
+ANALYSIS_MEMORY_LIMIT = 3 * 1024**3
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9  # SetInformationJobObject の情報の種類
 
 
@@ -63,6 +79,7 @@ class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
 
 
 _job = None  # ジョブのハンドル。プロセスが終わるまで閉じない（閉じると、中のプロセスが終わる）
+_memory_job = None  # 解析のプロセスの、メモリを限るジョブのハンドル（プロセスが終わるまで閉じない）
 
 
 def active() -> bool:
@@ -77,6 +94,25 @@ def enter() -> str:
         return ""
     if sys.platform != "win32":
         return "not Windows; a job object is not used"
+    job, reason = _new_job(_kernel32(), JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+    _job = job
+    return reason
+
+
+def limit_memory(limit: int = ANALYSIS_MEMORY_LIMIT) -> str:
+    """このプロセス（解析のプロセス）を、確保できるメモリを limit バイトに限るジョブに入れる。入れたら空を、入れられ
+    なければ理由を返す"""
+    global _memory_job
+    if _memory_job is not None:
+        return ""
+    if sys.platform != "win32":
+        return "not Windows; a job object is not used"
+    job, reason = _new_job(_kernel32(), JOB_OBJECT_LIMIT_PROCESS_MEMORY, limit)
+    _memory_job = job
+    return reason
+
+
+def _kernel32():
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
@@ -86,11 +122,22 @@ def enter() -> str:
     kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return kernel32
+
+
+def _new_job(kernel32, flags: int, process_memory: int = 0):
+    """flags の制限（JOB_OBJECT_LIMIT_PROCESS_MEMORY なら、プロセスが確保できるメモリ process_memory）のジョブを作り、
+    このプロセスを入れる。(ジョブのハンドル, "") か、入れられなければ (None, 理由)。理由は異常終了の記録に書く文なので
+    英語にする"""
     job = kernel32.CreateJobObjectW(None, None)
     if not job:
-        return f"could not create a job object (CreateJobObjectW, error {ctypes.get_last_error()})"
+        return (
+            None,
+            f"could not create a job object (CreateJobObjectW, error {ctypes.get_last_error()})",
+        )
     info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    info.BasicLimitInformation.LimitFlags = flags
+    info.ProcessMemoryLimit = process_memory
     if not kernel32.SetInformationJobObject(
         job,
         JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
@@ -99,12 +146,16 @@ def enter() -> str:
     ):
         error = ctypes.get_last_error()
         kernel32.CloseHandle(job)
-        # 異常終了の記録に書く文なので英語にする
-        return f"could not set the job object limits (SetInformationJobObject, error {error})"
+        return (
+            None,
+            f"could not set the job object limits (SetInformationJobObject, error {error})",
+        )
     if not kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()):
         # 会社の管理ソフトなどが、すでにプロセスを入れ子にできないジョブに入れていると失敗する
         error = ctypes.get_last_error()
         kernel32.CloseHandle(job)
-        return f"could not assign the process to the job object (AssignProcessToJobObject, error {error})"
-    _job = job
-    return ""
+        return (
+            None,
+            f"could not assign the process to the job object (AssignProcessToJobObject, error {error})",
+        )
+    return job, ""

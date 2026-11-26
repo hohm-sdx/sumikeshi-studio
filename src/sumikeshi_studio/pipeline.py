@@ -47,6 +47,9 @@ class PageResult:
     line_match: tuple[float, float] | None = None
     # 様式不明のままになったページで、罫線の一致度が下限に届かなかった候補（forms.BelowLimit。作業ログに書く）
     line_below: forms.BelowLimit | None = None
+    # ページの解像度（imaging.resolve で決めたもの。PDF のページは、開いただけでは決まっていないので、画面と
+    # コマンドラインは、これでページの解像度を埋める）
+    dpi: float | None = None
 
     @property
     def work_shape(self) -> tuple[int, int]:
@@ -94,6 +97,7 @@ def analyze(
     engine は題名を読む OCR。90度単位の向きの判定は、常に RapidOCR で行う。
     formset は使う様式（この PC で使わない様式を除いたもの）。空なら、どのページも様式不明になる。
     """
+    page = imaging.resolve(page)
     gray = imaging.render(page, dpi=imaging.WORK_DPI, gray=True)
     # 回さないかもしれないページは、回さないときの傾きを、向きを決めるあいだに別のスレッドで求めておく（傾きの推定は
     # 1ページの解析の時間の半分ほどかかり、OpenCV の処理のあいだは GIL を手放すので、位置合わせと同時に進む）
@@ -171,6 +175,7 @@ def analyze(
         variant=loc.variant,
         line_match=loc.line_match,
         line_below=loc.line_below,
+        dpi=page.dpi,
     )
 
 
@@ -189,8 +194,10 @@ def _by_lines(loc: forms.Located, work: np.ndarray) -> forms.Located:
     - 位置合わせできた用紙が1枚で、用紙についての注記がない（罫線の対応は、ページ全体を1枚の表として読む。類似した
       様式を題名で決められないページは、様式が決まっていない）。注記が、様式を判別できない用紙も写っていること
       （forms.OTHER_PAPER_NOTE）だけのページは試す（行の高さ・列の幅が見本と違う用紙では、位置合わせの変換で移した
-      見本の四隅がページの一部しか覆わず、残りをほかの用紙とみて、この注記が付くことがある。置き換えたときは、ページ全体を
-      1枚の表として置けたので、この注記も外れる）
+      見本の四隅がページの一部しか覆わず、残りをほかの用紙とみて、この注記が付くことがある。置き換えたときは、見本の
+      用紙の四隅を罫線の対応で移した四角の外を調べ直し、印字のある用紙が写っていればこの注記を残し、写っていなければ
+      外す。罫線のほとんどない別の用紙（カードの写しなど）は罫線の対応に効かないので、置き換えても、その用紙は
+      墨消しされないまま残るため。調べる四角は、写真と判定したページでは、その用紙の余白の印刷まで広げない）
     - 様式が、罫線の並びを判別に使う様式で、見本の罫線を持つ
     - 用紙が歪んで写っていない（罫線の対応は、線が平行に並んだページを前提にする。歪みの判定は、ほかの条件に合う
       ページでだけ行う）
@@ -211,7 +218,10 @@ def _by_lines(loc: forms.Located, work: np.ndarray) -> forms.Located:
     if loc.unframed:
         if formcheck.distorted(work):
             return loc
-        variant = variants.relocate(work, spec)
+        lines = variants.page_model(work)
+        if lines is None:
+            return loc
+        variant = variants.relocate(work, spec, lines)
         if variant is None or len(variant.unframed) >= len(loc.unframed):
             return loc
     else:
@@ -230,8 +240,17 @@ def _by_lines(loc: forms.Located, work: np.ndarray) -> forms.Located:
             return loc
         if _edge_shift(variant.fields, loc.fields) <= LINES_SHIFT:
             return loc
+    other_paper = False
+    if loc.other_paper_only:
+        # 調べる四角は、その用紙自身の余白の印刷まで広げる。写真と判定したページでは広げない（広げる上限の前提の、作業
+        # 画像が用紙の実際の大きさであることが、写真では成り立たないため）
+        plain = variants.page_quad(spec, lines)
+        quad = plain if loc.photo else variants.page_quad(spec, lines, work)
+        other_paper = forms.other_paper_beside(work, quad, plain)
     return dataclasses.replace(
-        forms.from_variant(variant), points=loc.points, similar=loc.similar
+        forms.from_variant(variant, other_paper),
+        points=loc.points,
+        similar=loc.similar,
     )
 
 

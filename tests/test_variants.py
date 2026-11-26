@@ -5,6 +5,7 @@
 import dataclasses
 import math
 import random
+import types
 
 import cv2
 import numpy as np
@@ -21,6 +22,7 @@ from sumikeshi_studio import (
     formstore,
     frames,
     imaging,
+    paper,
     pipeline,
     rulings,
     variants,
@@ -891,7 +893,7 @@ def test_aligned_page_with_changed_rows_is_placed_by_lines(monkeypatch):
         fuyou, variants.Match(*res.line_match)
     )
     assert res.unframed == () and res.crossed == () and max(errors(res)) <= 2
-    monkeypatch.setattr(variants, "relocate", lambda gray, spec: None)
+    monkeypatch.setattr(variants, "relocate", lambda gray, spec, pm=None: None)
     kept = pipeline.analyze(page, formset=bundled_forms())
     assert not kept.variant and kept.line_match is None and kept.points == res.points
     assert kept.unframed and max(errors(kept)) > 6
@@ -988,19 +990,25 @@ def test_aligned_page_is_replaced_only_when_fewer_fields_lack_frames(
     """見本と位置合わせできたページを罫線の対応で置き直すのは、位置合わせできた用紙が1枚で用紙についての注記がなく、
     枠の線が見つからない欄があり、様式が罫線の並びを判別に使う様式で見本の罫線を持ち、用紙が歪んで写っていない
     ページで、罫線の対応で置くと枠の線が見つからない欄が減るときだけ。置き直すときは全部の欄を置き換え、位置合わせの
-    点は残す"""
+    点は残す。読んだ罫線は、置き直しに渡す"""
     asked = []
+    lines = object()
 
     def is_distorted(work):
         asked.append("distorted")
         return distorted
 
-    def relocate(gray, spec):
+    def relocate(gray, spec, pm):
+        assert pm is lines
         asked.append("lines")
         return placed
 
     monkeypatch.setattr(formcheck, "distorted", is_distorted)
+    monkeypatch.setattr(variants, "page_model", lambda work: lines)
+    monkeypatch.setattr(variants, "placed_shift", lambda spec, pm, fields: 0.0)
     monkeypatch.setattr(variants, "relocate", relocate)
+    monkeypatch.setattr(variants, "page_quad", lambda spec, pm, gray=None: None)
+    monkeypatch.setattr(forms, "other_paper_beside", lambda gray, quad, cover: False)
     got = pipeline._by_lines(loc, np.zeros((10, 10), np.uint8))
     assert ("distorted" in asked, "lines" in asked) == (asks_distorted, asks_lines)
     if replaced:
@@ -1009,6 +1017,209 @@ def test_aligned_page_is_replaced_only_when_fewer_fields_lack_frames(
         assert got.points == loc.points and got.crossed == ()
     else:
         assert got is loc
+
+
+@pytest.mark.parametrize("unframed", [True, False])
+@pytest.mark.parametrize("other", [True, False])
+def test_replaced_page_keeps_note_only_when_other_paper_is_beside(
+    monkeypatch, unframed, other
+):
+    """注記が、様式を判別できない用紙も写っていることだけのページを置き換えたときは、見本の用紙の四隅を罫線の対応で
+    移した四角（variants.page_quad）の外を調べ直し、印字のある用紙が写っていれば注記を残して、バリエーションの文の
+    前に置く。写っていなければ外す。枠の線が見つからない欄のあるページも、すべて見つかったページも同じ"""
+    lines, quad, plain = object(), object(), object()
+    asked = []
+    work = np.zeros((10, 10), np.uint8)
+
+    def page_quad(spec, pm, gray=None):
+        # 調べる四角は、その用紙自身の余白の印刷まで広げるので、作業画像も渡す。作業画像を覆う割合は、広げる前の
+        # 四角で見る
+        assert spec.id == "nta-fuyou-r9" and pm is lines
+        assert gray is work or gray is None
+        return quad if gray is work else plain
+
+    def other_paper_beside(gray, got, cover):
+        asked.append(got)
+        assert gray is work and cover is plain
+        return other
+
+    monkeypatch.setattr(formcheck, "distorted", lambda work: False)
+    monkeypatch.setattr(variants, "page_model", lambda work: lines)
+    monkeypatch.setattr(variants, "placed_shift", lambda spec, pm, fields: 50.0)
+    placed = _variant(1) if unframed else _moved_variant(50)
+    monkeypatch.setattr(variants, "relocate", lambda gray, spec, pm: placed)
+    monkeypatch.setattr(variants, "page_quad", page_quad)
+    monkeypatch.setattr(forms, "other_paper_beside", other_paper_beside)
+    loc = _located(paper_notes=True, other_paper_only=True)
+    if not unframed:
+        loc = dataclasses.replace(loc, unframed=())
+    got = pipeline._by_lines(loc, work)
+    assert got.variant and got.fields == list(placed.fields) and asked == [quad]
+    variant_note = (
+        "『扶養控除等申告書』のバリエーションのため、範囲がずれているおそれがあります"
+    )
+    if other:
+        assert got.note == f"{forms.OTHER_PAPER_NOTE}。{variant_note}"
+    else:
+        assert got.note == variant_note
+    assert got.paper_notes == got.other_paper_only == other
+
+
+def test_photo_page_checks_other_paper_without_widening(monkeypatch):
+    """写真と判定したページを置き換えたときは、調べ直す四角を、その用紙の余白の印刷まで広げない（広げる上限は、作業画像
+    が用紙の実際の大きさであることを前提にするが、写真では成り立たないため）。作業画像を渡さずに求めた四角で調べる"""
+    lines, plain = object(), object()
+    asked = []
+    work = np.zeros((10, 10), np.uint8)
+
+    def page_quad(spec, pm, gray=None):
+        assert gray is None, "写真のページで、四角を作業画像の印刷まで広げた"
+        return plain
+
+    def other_paper_beside(gray, got, cover):
+        asked.append((got, cover))
+        return True
+
+    monkeypatch.setattr(formcheck, "distorted", lambda work: False)
+    monkeypatch.setattr(variants, "page_model", lambda work: lines)
+    monkeypatch.setattr(variants, "relocate", lambda gray, spec, pm: _variant(1))
+    monkeypatch.setattr(variants, "page_quad", page_quad)
+    monkeypatch.setattr(forms, "other_paper_beside", other_paper_beside)
+    loc = _located(paper_notes=True, other_paper_only=True, photo=True)
+    got = pipeline._by_lines(loc, work)
+    assert got.variant and asked == [(plain, plain)]
+    assert got.note.startswith(forms.OTHER_PAPER_NOTE)
+
+
+def _form_with_margin_print(side_print=None, beside=None, gap=40):
+    """罫線のある範囲（x 200〜1400、y 200〜1000）の表と、その右に、表の右の辺から gap 画素の空白をあけて置く印字の
+    画像。印字は、字に見立てた、線の太さ2画素の16画素四方の枠（用紙の部分を求める処理で、明るい部分に埋まる大きさ）を
+    並べたもの。side_print は表の高さいっぱいの縦の文の帯（字2列）を、beside は (幅, 高さ) の字の塊を置く"""
+    g = np.full((1200, 2000), 240, np.uint8)
+    cv2.rectangle(g, (200, 200), (1400, 1000), 30, 3)
+    for y in range(240, 1000, 40):
+        g[y : y + 3, 220:1380] = 30  # 表の中の印刷
+
+    def letters(x0, y0, w, h):
+        for y in range(y0, y0 + h - 16, 26):
+            for x in range(x0, x0 + w - 16, 26):
+                cv2.rectangle(g, (x, y), (x + 15, y + 15), 40, 2)
+
+    x = 1400 + gap
+    if side_print:
+        letters(x, 210, 60, 780)
+    if beside:
+        letters(x, 300, *beside)
+    return g
+
+
+def test_print_band_extends_only_over_print_along_the_side():
+    """paper.print_band は、罫線のある範囲の辺から外へ、空白が gaps 以下で続く印字の帯をたどり、辺に沿って辺の長さの
+    BAND_SPAN 以上にわたる印字（帳票の余白に刷られた、表の高さいっぱいの縦の文）の外の端まで広げる。辺の長さの
+    BAND_SPAN に届かない印字（帳票の余白に重ねて写ったカードの大きさの紙）と、空白が gaps より広い所の印字は、端に
+    しない"""
+    box, gaps = (200, 200, 1400, 1000), (80, 80, 80, 80)
+    side = paper.print_band(_form_with_margin_print(side_print=True), box, gaps)
+    assert side[2] == pytest.approx(1466 + 16, abs=4)  # 縦の文の外の列の字の外の端まで
+    assert side[:2] == pytest.approx((200, 200), abs=4)  # 印刷のない辺は広げない
+    card = paper.print_band(_form_with_margin_print(beside=(600, 340)), box, gaps)
+    assert card[2] == pytest.approx(
+        1400, abs=4
+    )  # 高さ340画素（辺の約0.43）の塊は端にしない
+    far = paper.print_band(_form_with_margin_print(side_print=True, gap=120), box, gaps)
+    assert far[2] == pytest.approx(1400, abs=4)  # 空白が80画素より広い
+    both = paper.print_band(
+        _form_with_margin_print(side_print=True, beside=(600, 340)), box, gaps
+    )
+    assert both[2] == pytest.approx(
+        1466 + 16, abs=4
+    )  # 縦の文までで、塊の外の端まではいかない
+
+
+def _band_ink(columns: dict[int, list[tuple[int, int]]]) -> np.ndarray:
+    """縮めた画像の印字（paper._ink の代わり）。罫線のある範囲は縮めた画像の (50, 50, 350, 250)（作業画像の (200, 200,
+    1400, 1000)。辺の長さ200画素）で、columns は {列: [(行の始め, 行の終わり), …]} の印字"""
+    ink = np.zeros((300, 500), bool)
+    for x, spans in columns.items():
+        for a, b in spans:
+            ink[a:b, x] = True
+    return ink
+
+
+@pytest.mark.parametrize(
+    ("columns", "right"),
+    [
+        # 辺に沿って辺の長さの0.6にわたる列は、帳票の印刷とみなして端にする。0.4の列は端にしない（BAND_SPAN 0.5）
+        ({355: [(50, 170)]}, 356),
+        ({355: [(50, 130)]}, 350),
+        # 辺から縮めた画像で15画素（作業画像で60画素）の空白をあけた列は、空白の幅（作業画像で80画素）の中なので端にする
+        ({365: [(50, 250)]}, 366),
+        # 1画素だけの列（紙のしみや塵の点）は印字に数えない（BAND_INK 2）。その点で帯がつながると、空白の幅より遠い列まで
+        # 端が延びる
+        ({355: [(50, 250)], 368: [(100, 101)], 380: [(50, 250)]}, 356),
+        # 3画素の列（辺の長さの0.5以上にわたる点の並び）は印字に数える
+        ({355: [(55, 56), (150, 151), (245, 246)]}, 356),
+    ],
+)
+def test_print_band_counts_ink_columns(monkeypatch, columns, right):
+    """paper.print_band の、印字のある列（BAND_INK 画素以上）、辺に沿ってわたる長さ（BAND_SPAN）、たどる空白の幅
+    （gaps）の境。印字は縮めた画像の上で与える（_band_ink）。右の辺の外の端（作業画像の画素）を確かめる"""
+    monkeypatch.setattr(paper, "_ink", lambda gray: _band_ink(columns))
+    box, gaps = (200, 200, 1400, 1000), (80, 80, 80, 80)
+    got = paper.print_band(np.zeros((1, 1), np.uint8), box, gaps)
+    assert got == pytest.approx((200, 200, right / paper.PAPER_SCALE, 1000))
+
+
+@pytest.mark.parametrize(("extra", "widened"), [(0.05, True), (0.15, False)])
+def test_quad_is_widened_only_within_paper_size(monkeypatch, extra, widened):
+    """variants.page_quad は、余白の印刷まで広げた幅と高さが、見本の用紙の大きさ（spec.size）を超えない向きだけ広げる。
+    罫線のある範囲がページで見本の0.9倍のとき、見本の用紙の0.05倍ずつ広げても大きさの中なので広げ、0.15倍ずつでは
+    超えるので広げない（幅と高さのそれぞれで確かめる）"""
+    spec = bundled("nta-fuyou-r9")
+    w, h = spec.size
+    x0, y0, x1, y1 = variants.template_model(spec).box
+    box = (x0, y0, x0 + 0.9 * (x1 - x0), y0 + 0.9 * (y1 - y0))
+    pm = types.SimpleNamespace(box=box)
+    plain = variants.page_quad(spec, pm)
+    top = plain[0][1]
+    right = plain[2][0]
+    band = (box[0], top - extra * h, right + extra * w, box[3])
+    monkeypatch.setattr(paper, "print_band", lambda gray, b, gaps: band)
+    wide = variants.page_quad(spec, pm, np.zeros((1, 1), np.uint8))
+    if widened:
+        assert wide[2][0] == pytest.approx(right + extra * w)
+        assert wide[0][1] == pytest.approx(top - extra * h)
+    else:
+        assert np.allclose(wide, plain)
+
+
+def test_other_paper_beside_decides_cover_by_unwidened_quad(monkeypatch):
+    """forms.other_paper_beside は、用紙が作業画像の COVER_FULL 以上を覆うか（覆えば調べない）を cover の四角で見る。
+    帳票自身の余白の印刷まで広げた四角が COVER_FULL を超えても、広げる前の四角が超えなければ調べる"""
+    gray = np.full((100, 100), 255, np.uint8)
+    wide = np.float32([[0, 0], [96, 0], [96, 96], [0, 96]])  # 画像の約92%
+    plain = np.float32([[0, 0], [90, 0], [90, 90], [0, 90]])  # 画像の81%
+    asked = []
+    monkeypatch.setattr(
+        paper, "other_paper", lambda g, quads: asked.append(quads) or True
+    )
+    assert not forms.other_paper_beside(gray, wide)
+    assert forms.other_paper_beside(gray, wide, plain) and asked == [[wide]]
+
+
+def test_replaced_page_without_note_does_not_look_for_other_paper(monkeypatch):
+    """用紙についての注記のないページを置き換えたときは、別の用紙を調べない（注記は付かない）"""
+    monkeypatch.setattr(formcheck, "distorted", lambda work: False)
+    monkeypatch.setattr(variants, "page_model", lambda work: object())
+    monkeypatch.setattr(variants, "relocate", lambda gray, spec, pm: _variant(1))
+
+    def fail(*args):
+        raise AssertionError("別の用紙を調べた")
+
+    monkeypatch.setattr(forms, "other_paper_beside", fail)
+    got = pipeline._by_lines(_located(), np.zeros((10, 10), np.uint8))
+    assert got.variant and not got.paper_notes
+    assert "様式を判別できない" not in got.note
 
 
 def _moved_variant(by: float, unframed: int = 0) -> variants.Variant:
@@ -1120,11 +1331,57 @@ def test_page_with_all_frames_is_replaced_only_when_lines_disagree(
         assert got is loc
 
 
-def band_stretched(image: np.ndarray, middle: float):
-    """用紙の高さの30〜60% の帯の行の高さを middle 倍、その下を0.95倍にした画像（全体の高さは同じ）と、
-    元の y から移した後の y を求める関数"""
+@pytest.mark.parametrize(
+    ("notes", "papers", "want"),
+    [
+        ([(forms.PaperNote.OTHER_PAPER, "別の文")], 1, True),
+        # 文が様式を判別できない用紙の注記と同じでも、種類が違えば試さない
+        ([(forms.PaperNote.SIMILAR, forms.OTHER_PAPER_NOTE)], 1, False),
+        (
+            [
+                (forms.PaperNote.SIMILAR, "類似した様式"),
+                (forms.PaperNote.OTHER_PAPER, forms.OTHER_PAPER_NOTE),
+            ],
+            1,
+            False,
+        ),
+        ([(forms.PaperNote.OTHER_PAPER, forms.OTHER_PAPER_NOTE)], 2, False),
+        ([], 1, False),
+    ],
+)
+def test_other_paper_only_is_decided_by_kind_of_note(monkeypatch, notes, papers, want):
+    """置き直しを試すか（other_paper_only）は、用紙についての注記の文でなく種類で決める：位置合わせできた用紙が1枚で、
+    注記が、様式を判別できない用紙も写っていること（PaperNote.OTHER_PAPER）の1つだけ。注記の文は、種類の順に
+    そのまま続ける"""
+    spec = bundled("nta-fuyou-r9")
+    paper = forms._Paper(align.templates([spec])[0], np.eye(3), 500)
+    monkeypatch.setattr(forms, "_first_paper", lambda *args: (object(), []))
+    monkeypatch.setattr(
+        forms, "_papers", lambda *args: ([paper] * papers, (), list(notes))
+    )
+    monkeypatch.setattr(
+        forms,
+        "_placed",
+        lambda gray, found: forms._Placed([], [], [], [], [], [], False),
+    )
+    loc = forms.locate(np.zeros((10, 10), np.uint8), None, [spec], features=())
+    assert loc.other_paper_only == want and loc.paper_notes == bool(notes)
+    assert loc.note == "。".join(text for _, text in notes)
+
+
+def band_stretched(
+    image: np.ndarray,
+    middle: float,
+    lo: float = 0.3,
+    hi: float = 0.6,
+    rest: float | None = 0.95,
+):
+    """用紙の高さの lo〜hi の帯の行の高さを middle 倍、その下を rest 倍にした画像（全体の高さは同じ。rest が None なら、
+    倍率を変えずに全体の高さが同じになる値にする）と、元の y から移した後の y を求める関数"""
     h, w = image.shape
-    parts, scales = np.array([0.3, 0.3, 0.4]), np.array([1.0, middle, 0.95])
+    if rest is None:
+        rest = (1 - lo - (hi - lo) * middle) / (1 - hi)
+    parts, scales = np.array([lo, hi - lo, 1 - hi]), np.array([1.0, middle, rest])
     ky = np.concatenate([[0], np.cumsum(parts)]) * h
     my = np.concatenate([[0], np.cumsum(parts * scales)]) * h
     my = my * h / my[-1]
@@ -1182,8 +1439,9 @@ def test_field_fitted_to_lines_of_next_row_is_placed_by_lines(reference, monkeyp
 def test_page_with_false_other_paper_note_is_placed_by_lines(reference, monkeypatch):
     """行の高さと列の幅を変えた用紙に、線を越える大きさの数字を書いたページは、位置合わせの変換で移した見本の
     四隅がページの一部しか覆わず、「様式を判別できない用紙も写っていて、その用紙は墨消ししていません」の要確認が付く。用紙に
-    ついての要確認がこの1つだけなら、置き直しを試し、置き換えたときは、この要確認を外して、バリエーションの文だけに
-    する（置き直さないと、欄が正しい位置から200画素を超えてずれたまま残る）"""
+    ついての要確認がこの1つだけなら、置き直しを試す。置き換えたときは、見本の用紙の四隅を罫線の対応で移した四角の外に
+    用紙がないので、この要確認を外して、バリエーションの文だけにする（置き直さないと、欄が正しい位置から200画素を
+    超えてずれたまま残る）"""
     form, form_id = "2027bun_01", "nta-fuyou-r9"
     _, boxes = reference(form)
     img, truth = warped(form, form_id, written_page(form, GRAY_DPI, boxes, "over1"))
@@ -1214,6 +1472,134 @@ def test_page_with_false_other_paper_note_is_placed_by_lines(reference, monkeypa
         for b, t in zip(res.boxes, truth, strict=True)
     ]
     assert res.unframed == () and max(errors) <= 2
+
+
+def card() -> np.ndarray:
+    """カードの写しに見立てた、罫線のない用紙の画像（英字の行・写真に見立てた灰色の四角・12桁の数字。外枠なし）"""
+    c = np.full((640, 1010), 255, np.uint8)
+    for i, y in enumerate(range(90, 420, 60)):
+        cv2.putText(
+            c, f"NAME ADDRESS LINE {i}", (40, y), cv2.FONT_HERSHEY_SIMPLEX, 1.1, 30, 2
+        )
+    c[80:420, 700:960] = 150
+    cv2.putText(c, "1234 5678 9012", (60, 560), cv2.FONT_HERSHEY_SIMPLEX, 2.0, 0, 4)
+    return c
+
+
+def beside(main: np.ndarray, other: np.ndarray, where: str) -> np.ndarray:
+    """main の右（上から200画素）か下（左から100画素）に、60画素あけて other を並べた画像"""
+    h, w = main.shape
+    oh, ow = other.shape
+    gap = 60
+    if where == "right":
+        out = np.full((max(h, oh), w + gap + ow), 255, np.uint8)
+        out[200 : 200 + oh, w + gap :] = other
+    else:
+        out = np.full((h + gap + oh, max(w, ow)), 255, np.uint8)
+        out[h + gap :, 100 : 100 + ow] = other
+    out[:h, :w] = main
+    return out
+
+
+@pytest.mark.parametrize("where", ["right", "below"])
+@pytest.mark.parametrize(
+    ("lo", "hi", "middle"), [(0.3, 0.6, 1.08), (0.5, 0.8, 1.04), (0.2, 0.5, 1.12)]
+)
+def test_replaced_page_keeps_note_of_other_paper_without_lines(
+    reference, monkeypatch, lo, hi, middle, where
+):
+    """帯の行の高さを変えた扶養控除等申告書の横か下に、罫線のほとんどない別の用紙（カードの写しに見立てた画像）を
+    並べたページは、「様式を判別できない用紙も写っていて…」の注記だけが付き、置き直す。別の用紙は罫線の対応に
+    効かないので置き換わるが、見本の用紙の四隅を罫線の対応で移した四角の外に、その用紙が残るので、注記を残す
+    （外すと、墨消ししていないその用紙の番号が、要確認の文から消える）"""
+    form, form_id = "2027bun_01", "nta-fuyou-r9"
+    _, boxes = reference(form)
+    filled, moved = band_stretched(
+        written_page(form, GRAY_DPI, boxes, "center"), middle, lo, hi, rest=None
+    )
+    img = beside(filled, card(), where)
+    page = imaging.MemoryPage(np.dstack([img] * 3), 200.0, "test")
+    seen = []
+    real = pipeline._by_lines
+
+    def spy(loc, work):
+        seen.append(loc)
+        return real(loc, work)
+
+    monkeypatch.setattr(pipeline, "_by_lines", spy)
+    res = pipeline.analyze(page, formset=bundled_forms())
+    (loc,) = seen
+    assert loc.other_paper_only and len(loc.points) == 1
+    assert res.variant and res.note == (
+        f"{forms.OTHER_PAPER_NOTE}。『{bundled(form_id).name}』のバリエーションのため、"
+        "範囲がずれているおそれがあります"
+    )
+    truth = [(b.x, moved(b.y), b.w, moved(b.y + b.h) - moved(b.y)) for b in boxes]
+    errors = [
+        max(abs(a - b) for a, b in zip(box.rect(), t))
+        for box, t in zip(res.boxes, truth, strict=True)
+    ]
+    assert max(errors) <= 2
+
+
+def _overlapped(main: np.ndarray, other: np.ndarray, overlap: int) -> np.ndarray:
+    """main の右の端に、other を overlap 画素重ねて（上から200画素の所に）写した画像（重なる所は濃いほう）"""
+    h, w = main.shape
+    oh, ow = other.shape
+    out = np.full((max(h, 200 + oh), w - overlap + ow), 255, np.uint8)
+    out[:h, :w] = main
+    x = w - overlap
+    out[200 : 200 + oh, x:] = np.minimum(out[200 : 200 + oh, x:], other)
+    return out
+
+
+def _a5_sheet() -> np.ndarray:
+    """A5 の文書（200dpi で 1165×1654）に見立てた、罫線のない文字だけの紙：英字の文の行を50画素ごとに、紙の左の端から
+    100画素の所から書き、9行目に12桁の数字の行を書いた画像"""
+    s = np.full((1654, 1165), 255, np.uint8)
+    for i, y in enumerate(range(150, 1654 - 120, 50)):
+        if i == 8:
+            cv2.putText(
+                s, "1234 5678 9012", (100, y), cv2.FONT_HERSHEY_SIMPLEX, 1.4, 0, 3
+            )
+        else:
+            text = f"THE QUICK BROWN FOX JUMPS OVER {i:02d}"
+            cv2.putText(s, text, (100, y), cv2.FONT_HERSHEY_SIMPLEX, 1.0, 30, 2)
+    return s
+
+
+@pytest.mark.parametrize("overlap", [60, 100])
+def test_replaced_page_keeps_note_of_card_overlapping_its_margin(reference, overlap):
+    """帯の行の高さを変えた扶養控除等申告書の画像の右の白い余白に、カードの写し（card）を重ねて写し、カードの印字が
+    帳票の印刷から見本の余白の幅以内に入るページも、置き直して「様式を判別できない用紙も写っていて…」を残す。カードは
+    表の高さの半分に届かないので、帳票自身の余白の印刷とみなさない（みなすと注記が外れ、カードの番号が要確認なしで
+    墨消しの外に残る）"""
+    form = "2027bun_01"
+    _, boxes = reference(form)
+    filled, _ = band_stretched(
+        written_page(form, GRAY_DPI, boxes, "center"), 1.08, 0.3, 0.6, rest=None
+    )
+    img = _overlapped(filled, card(), overlap)
+    res = pipeline.analyze(
+        imaging.MemoryPage(np.dstack([img] * 3), 200.0, "test"),
+        formset=bundled_forms(),
+    )
+    assert res.variant
+    assert res.note.startswith(forms.OTHER_PAPER_NOTE)
+
+
+@pytest.mark.parametrize("overlap", [150, 200, 250])
+def test_quad_is_not_widened_over_large_sheet_beyond_paper_size(overlap):
+    """扶養控除等申告書の画像の右の白い余白に、A5 の文書に見立てた紙（文の行が表の高さの半分を超えて続く）を重ねて
+    写したページで、置き直しの調べ直しの四角は、紙の側（右）へ広げない。紙まで帳票の印刷とみなすと、広げた幅が見本の
+    用紙の大きさを超えるため。四角の外に紙が残り、別の用紙があると判定する（罫線を読んで四角を求めるところだけを
+    見る。位置合わせは使わない）"""
+    img = _overlapped(written_page("2027bun_01", GRAY_DPI), _a5_sheet(), overlap)
+    spec = bundled("nta-fuyou-r9")
+    pm = variants.page_model(img)
+    plain, wide = variants.page_quad(spec, pm), variants.page_quad(spec, pm, img)
+    assert wide[1][0] == pytest.approx(plain[1][0])
+    assert forms.other_paper_beside(img, wide, plain)
 
 
 @pytest.mark.parametrize(
@@ -1256,8 +1642,8 @@ def test_real_other_paper_keeps_its_note(monkeypatch):
     tried = []
     real = variants.relocate
 
-    def relocate(gray, spec):
-        tried.append(real(gray, spec))
+    def relocate(gray, spec, pm=None):
+        tried.append(real(gray, spec, pm))
         return tried[-1]
 
     monkeypatch.setattr(variants, "relocate", relocate)
@@ -1277,8 +1663,8 @@ def test_aligned_scan_without_lines_is_not_replaced(scan, monkeypatch):
     tried = []
     real = variants.relocate
 
-    def relocate(gray, spec):
-        tried.append(real(gray, spec))
+    def relocate(gray, spec, pm=None):
+        tried.append(real(gray, spec, pm))
         return tried[-1]
 
     monkeypatch.setattr(variants, "relocate", relocate)

@@ -544,34 +544,47 @@ def test_field_notes_merge_names():
     def fields(*names):
         return [forms.Field(name=n, x=0, y=0, w=1, h=1, frame=()) for n in names]
 
+    def notes(fields, **names):
+        """_placed の結果を名前で作って渡す（渡さない一覧は空）"""
+        lists = {
+            k: list(names.get(k, ()))
+            for k in ("unframed", "crossed", "frameless", "tilted", "shifted")
+        }
+        return forms._field_notes(forms._Placed(fields, photo=False, **lists))
+
     every = fields("甲", "乙", "丙", "丁")
-    notes = forms._field_notes(
+    got = notes(
         every,
         unframed=["丙", "乙"],
         crossed=["乙"],
-        frameless=[],
         tilted=["丙", "甲"],
         shifted=["丙"],
     )
-    assert notes == ["「乙」「丙」「甲」の欄の範囲が、欄に合っていないおそれがあります"]
-    # 名前のどれかの一覧だけではページの全部の欄にならなくても、まとめると全部になれば「すべての欄」
-    assert forms._field_notes(
-        every,
-        unframed=["甲", "乙"],
-        crossed=[],
-        frameless=["丙"],
-        tilted=["丁"],
-        shifted=[],
+    assert got == ["「乙」「丙」「甲」の欄の範囲が、欄に合っていないおそれがあります"]
+    # 名前の順は、どの一覧から来たかで決まる（線を越えた記入 → 隣の行 → 線が見つからない → 写真の枠のない欄 →
+    # 線が傾いた欄）
+    assert notes(
+        every, tilted=["甲"], frameless=["乙"], unframed=["丙"], shifted=["丁"]
     ) == ["すべての欄の範囲が、欄に合っていないおそれがあります"]
-    assert forms._field_notes(every, [], [], [], [], []) == []
+    assert notes(every, tilted=["甲"], frameless=["乙"], unframed=["丙"]) == [
+        "「丙」「乙」「甲」の欄の範囲が、欄に合っていないおそれがあります"
+    ]
+    assert notes(every, crossed=["丁"], shifted=["丙"]) == [
+        "「丁」「丙」の欄の範囲が、欄に合っていないおそれがあります"
+    ]
+    # 名前のどれかの一覧だけではページの全部の欄にならなくても、まとめると全部になれば「すべての欄」
+    assert notes(every, unframed=["甲", "乙"], frameless=["丙"], tilted=["丁"]) == [
+        "すべての欄の範囲が、欄に合っていないおそれがあります"
+    ]
+    assert notes(every) == []
     # 同じ様式が2枚写っていると同じ名前の欄が2つあり、1枚の欄だけでは「すべての欄」としない
     twice = fields("甲", "乙", "甲", "乙")
-    assert forms._field_notes(twice, ["甲", "乙"], [], [], [], []) == [
+    assert notes(twice, unframed=["甲", "乙"]) == [
         "「甲」「乙」の欄の範囲が、欄に合っていないおそれがあります"
     ]
-    assert forms._field_notes(
-        twice, ["甲", "乙"], [], [], ["甲", "乙", "甲", "乙"], []
-    ) == ["すべての欄の範囲が、欄に合っていないおそれがあります"]
+    assert notes(twice, unframed=["甲", "乙"], tilted=["甲", "乙", "甲", "乙"]) == [
+        "すべての欄の範囲が、欄に合っていないおそれがあります"
+    ]
 
 
 def test_review_notes_in_english():
@@ -810,7 +823,8 @@ def _pdfium_reference(pages, path: Path) -> None:
     pdf = pdfium.PdfDocument.new()
     for src, res in pages:
         image = export.mask_page(export.PageJob.of(src, res))
-        width, height = image.width * 72 / src.dpi, image.height * 72 / src.dpi
+        dpi = imaging.resolve(src).dpi
+        width, height = image.width * 72 / dpi, image.height * 72 / dpi
         page = pdf.new_page(width, height)
         obj = pdfium.PdfImage.new(pdf)
         obj.load_jpeg(io.BytesIO(image.jpeg), inline=True)
@@ -959,7 +973,7 @@ def test_failure_in_one_field_keeps_moved_position(analyzed, monkeypatch):
     replaced = pipeline.analyze(page, formset=bundled_forms())
     assert replaced.variant and replaced.unframed == ()
     assert len(replaced.boxes) == len(expected.boxes)
-    monkeypatch.setattr(variants, "relocate", lambda gray, spec: None)
+    monkeypatch.setattr(variants, "relocate", lambda gray, spec, pm=None: None)
     res = pipeline.analyze(page, formset=bundled_forms())
     assert not res.variant
     assert len(res.boxes) == len(expected.boxes)
@@ -1002,6 +1016,107 @@ def test_ocr_uses_bundled_models_without_downloading(monkeypatch, tmp_path):
     assert "基礎控除申告書" in text
     with pytest.raises(ocr.ModelError, match="OCR のモデルのファイルがありません"):
         ocr.model_params(tmp_path)
+
+
+# onnxruntime は、CI の機械（次の環境変数のどれかがある）では、止めなくても利用状況の記録のファイルを書かない
+CI_VARIABLES = {
+    "CI",
+    "TF_BUILD",
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "CIRCLECI",
+    "TRAVIS",
+    "JENKINS_URL",
+    "CODEBUILD_BUILD_ID",
+    "BUILDKITE",
+    "TEAMCITY_VERSION",
+    "APPVEYOR",
+    "BITBUCKET_BUILD_NUMBER",
+}
+# 別のプロセスで動かす処理：OCR で読み、onnxruntime が読み込まれたことを出す
+READ_IN_ANOTHER_PROCESS = """
+import sys
+import numpy as np
+from sumikeshi_studio import ocr
+ocr.read(np.full((64, 256), 255, np.uint8))
+print("onnxruntime" in sys.modules)
+"""
+
+
+def test_ocr_stops_onnxruntime_telemetry(monkeypatch, tmp_path):
+    """OCR を用意するときに、onnxruntime の利用状況の記録と送信を止める：読み込む前に環境変数を入れ（Linux の部品は、
+    止めないと XDG_CACHE_HOME の下に端末の識別子とイベントの記録のファイルを書く）、Windows の ETW のイベントを止める
+    関数を呼ぶ。テストの環境の環境変数を外した別のプロセスで、記録のファイルができないかを見る。CI の機械を示す
+    環境変数（CI_VARIABLES）も外す（あると、止めなくても記録のファイルを書かず、確かめにならない）"""
+    import subprocess
+
+    drop = {"ORT_DISABLE_TELEMETRY", *CI_VARIABLES}
+    env = {k: v for k, v in os.environ.items() if k not in drop}
+    # 止めないと記録のファイルができること（調べ方が働いていること）。読み込むだけのプロセスは、接続しない
+    # （connect のシステムコールを呼ばない）
+    plain = tmp_path / "plain"
+    subprocess.run(
+        [sys.executable, "-c", "import onnxruntime"],
+        env={**env, "XDG_CACHE_HOME": str(plain)},
+        check=True,
+    )
+    assert any((plain / "Microsoft").rglob("*.db"))
+    tool = tmp_path / "tool"
+    out = subprocess.run(
+        [sys.executable, "-c", READ_IN_ANOTHER_PROCESS],
+        env={**env, "XDG_CACHE_HOME": str(tool)},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert out.split() == ["True"] and not tool.exists()
+
+    import onnxruntime
+
+    calls = []
+    monkeypatch.setattr(
+        onnxruntime, "disable_telemetry_events", lambda: calls.append("disable")
+    )
+    monkeypatch.delenv("ORT_DISABLE_TELEMETRY")
+    ocr._engine.cache_clear()
+    ocr._engine()
+    assert calls == ["disable"] and os.environ["ORT_DISABLE_TELEMETRY"] == "1"
+
+
+def test_ocr_stops_onnxruntime_events_before_each_call(monkeypatch):
+    """OCR のエンジンを呼ぶたびに（read・find_lines・classify_lines）、その直前に、ほかのスレッドと排他した中で、
+    onnxruntime の利用状況の ETW のイベントを止め直す（Windows の部品は、ほかのプログラムがあとからこの提供元の
+    記録を始めると、止めたイベントをまた出すため）"""
+    import onnxruntime
+
+    calls = []
+
+    class Engine:
+        def __call__(self, img, **options):
+            calls.append("engine")
+            return SimpleNamespace(txts=[], boxes=[])
+
+        def _load_cls_model(self):
+            def classify(crops):
+                calls.append("classify")
+                return SimpleNamespace(cls_res=[("0", 1.0)] * len(crops))
+
+            return classify
+
+    engine = Engine()
+    monkeypatch.setattr(ocr, "_engine", lambda: engine)
+    monkeypatch.setattr(
+        onnxruntime,
+        "disable_telemetry_events",
+        lambda: calls.append(("disable", ocr._lock.locked())),
+    )
+    img = np.full((64, 256), 255, np.uint8)
+    ocr.read(img)
+    ocr.read(img, upright=True)
+    ocr.find_lines(img)
+    ocr.classify_lines([img])
+    stop = ("disable", True)
+    assert calls == [stop, "engine", stop, "engine", stop, "engine", stop, "classify"]
 
 
 def test_template_image_is_remembered_with_revision(tmp_path):
@@ -1058,7 +1173,7 @@ def test_implausible_resolution_is_treated_as_a4(kind, scan, tmp_path):
         entries = "/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode"
         _image_pdf(path, w, h, 72, entries, zlib.compress(rgb.tobytes()))
     page = imaging.open_pages(path)[0]
-    assert 190 < page.dpi < 210
+    assert 190 < imaging.resolve(page).dpi < 210
     res = pipeline.analyze(page, formset=bundled_forms())
     assert max(res.work.shape) < 2600
     assert len(res.boxes) == 10
@@ -1286,7 +1401,7 @@ def test_pdf_calls_wait_for_pdf_lock(call, analyzed, tmp_path):
 def test_sample_pdf_resolution():
     """見本のスキャンの4ページの解像度（貼られた画像から求める）"""
     pages = imaging.open_pages(SAMPLE_SCAN)
-    assert [round(p.dpi) for p in pages] == [232] * 4
+    assert [round(imaging.resolve(p).dpi) for p in pages] == [232] * 4
 
 
 # ---------------------------------------------------------------- 利用者の様式

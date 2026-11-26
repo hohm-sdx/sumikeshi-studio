@@ -27,6 +27,7 @@ import math
 import traceback
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
+from enum import Enum, auto
 from typing import NamedTuple
 
 import cv2
@@ -140,9 +141,10 @@ def locate(
     線が見つからない辺のある範囲と、枠の線を越えて書かれた記入がある範囲と、写真と判定したページの枠のない範囲は、
     範囲の名前を入れて「⚠要確認」とする（写真の枠のない範囲は、線で位置を確かめられず、曲がりの補正だけで位置が
     決まるため）。写真と判定したページで、見つけた上か下の線が変換で傾き、線の中心が範囲の辺より TILT_REVIEW を
-    超えて外に出る所がある範囲も、名前を入れて「⚠要確認」とする（線の傾きは写真の遠近と用紙の曲がりの目安で、
-    長方形の範囲では線と辺のあいだに、線の中心を結ぶ四隅にした範囲では線で決めていない左右の辺の外に、記入が残る
-    ことがあるため）。
+    超えて外に出る所がある長方形の範囲も、名前を入れて「⚠要確認」とする（長方形の範囲では、傾いた線と辺のあいだに
+    すき間ができ、記入が残ることがあるため）。4辺とも線の中心を結ぶ四隅にした範囲には付けない（範囲の辺が線に沿うので、
+    すき間はほとんどできない。欄の片方の端で、辺が線の内側の縁より2画素ほど内側に入ることはある）。上下の線だけを探す
+    欄は、四隅にしても付ける（左右の辺を線で確かめていないため）。
     欄の周りの見本の印刷が、置いた位置より縦に半行以上離れた位置でよく合う範囲（隣の行に置かれている見込みが高い。
     rowshift）も、名前を入れて「⚠要確認」とする（範囲は変えない）。これらの範囲の名前は、範囲が欄に合っていない
     おそれのある欄として、1つの文に重ねずに挙げる（field_note）。
@@ -164,22 +166,21 @@ def locate(
     if best is None:
         return unknown()
     papers, similar, notes = _papers(gray, engine, tpls, features, best, candidates)
-    paper_notes = bool(notes)
-    other_paper_only = len(papers) == 1 and notes == [i18n.tr(OTHER_PAPER_NOTE)]
+    kinds = [kind for kind, _ in notes]
     placed = _placed(gray, papers)
-    notes += _field_notes(*placed[:6])
+    texts = [text for _, text in notes] + _field_notes(placed)
     return Located(
         form=papers[0].tpl.name,
         fields=placed.fields,
         # 注記は句点のない文なので、句点（英語は「. 」）でつなぐ
-        note=i18n.tr("。", context="注記の区切り").join(notes),
+        note=i18n.tr("。", context="注記の区切り").join(texts),
         used=tuple(dict.fromkeys(p.tpl.spec for p in papers)),
         unframed=tuple(dict.fromkeys(placed.unframed)),
         crossed=tuple(dict.fromkeys(placed.crossed)),
         similar=similar,
         points=tuple(p.points for p in papers),
-        paper_notes=paper_notes,
-        other_paper_only=other_paper_only,
+        paper_notes=bool(kinds),
+        other_paper_only=len(papers) == 1 and kinds == [PaperNote.OTHER_PAPER],
         photo=placed.photo,
     )
 
@@ -191,6 +192,8 @@ class Framed(NamedTuple):
     frame: frames.Frame  # 見つけた枠の線
     crossed: tuple[str, ...]  # 枠の線を越えた記入がある辺
     tilt: float  # 線の中心が範囲の辺より外に出る量（ページの画素）
+    # 線は見つかったが、欄の線か確かめられない（範囲は線に合わせ、線が見つからない欄として名前を挙げる）
+    unsure: bool = False
 
 
 class _Placed(NamedTuple):
@@ -206,6 +209,15 @@ class _Placed(NamedTuple):
 
 
 OTHER_PAPER_NOTE = "様式を判別できない用紙も写っていて、その用紙は墨消ししていません"
+
+
+class PaperNote(Enum):
+    """用紙についての注記の種類。置き直しを試すかは、文でなく種類で決める（文は翻訳され、数を入れることもあるため）"""
+
+    SIMILAR = auto()  # 類似した様式を題名で決められない
+    MANY = auto()  # 用紙が多く、MAX_FORMS 枚を超える分は墨消ししていない
+    OTHER_PAPER = auto()  # 様式を判別できない用紙も写っている（OTHER_PAPER_NOTE）
+    PAPERS = auto()  # 帳票が2枚以上写っている
 
 
 class _Paper(NamedTuple):
@@ -258,23 +270,27 @@ def _papers(
     features: tuple,
     best: tuple,
     candidates: list[tuple],
-) -> tuple[list[_Paper], tuple[FormSpec, ...], list[str]]:
-    """ページに写った用紙（1枚目と、その外に写ったほかの用紙）と、1枚目の類似した様式と、用紙についての注記"""
+) -> tuple[list[_Paper], tuple[FormSpec, ...], list[tuple[PaperNote, str]]]:
+    """ページに写った用紙（1枚目と、その外に写ったほかの用紙）と、1枚目の類似した様式と、用紙についての注記
+    [(種類, 文)]"""
     # 同じ用紙の部分に2つ以上の様式が成り立てば、題名で決める
     best, similar_note, similar = titles.choose(gray, features, candidates, engine)
     # 類似した様式がなければ、年分の違う帳票もその様式に決まる（扶養控除等申告書の令和7・8・9年分の公開様式は、
     # 個人番号欄の位置が同じで、令和7・8年分も令和9年分の見本と位置合わせが成り立つ）
     papers = [_paper(best, features)]
     quads = [align.page_quad(papers[0].tpl, papers[0].H)]
-    notes = [similar_note] if similar_note else []
+    notes = [(PaperNote.SIMILAR, similar_note)] if similar_note else []
     if align.quad_area(quads[0]) < COVER_FULL * gray.size:
         while paper.other_paper(gray, quads):
             if len(papers) >= MAX_FORMS:
                 # 残りの用紙は位置合わせしていないので、様式を判別できない用紙（OTHER_PAPER_NOTE）とは言えない
                 notes.append(
-                    i18n.tr(
-                        "用紙が多いため、{count}枚を超える分は墨消ししていません",
-                        count=MAX_FORMS,
+                    (
+                        PaperNote.MANY,
+                        i18n.tr(
+                            "用紙が多いため、{count}枚を超える分は墨消ししていません",
+                            count=MAX_FORMS,
+                        ),
                     )
                 )
                 break
@@ -286,19 +302,22 @@ def _papers(
                 chosen, more_note, _ = titles.choose(gray, outside, group_more, engine)
                 more = _paper(chosen, outside)
                 if more_note:
-                    notes.append(more_note)
+                    notes.append((PaperNote.SIMILAR, more_note))
             if more is None:
-                notes.append(i18n.tr(OTHER_PAPER_NOTE))
+                notes.append((PaperNote.OTHER_PAPER, i18n.tr(OTHER_PAPER_NOTE)))
                 break
             papers.append(more)
-            quads.append(align.page_quad(*more[:2]))
+            quads.append(align.page_quad(more.tpl, more.H))
     if len(papers) > 1:
         notes.insert(
             0,
-            i18n.tr(
-                "帳票が{count}枚写っています（{names}）",
-                count=len(papers),
-                names=i18n.join(p.tpl.name for p in papers),
+            (
+                PaperNote.PAPERS,
+                i18n.tr(
+                    "帳票が{count}枚写っています（{names}）",
+                    count=len(papers),
+                    names=i18n.join(p.tpl.name for p in papers),
+                ),
             ),
         )
     return papers, similar, notes
@@ -324,13 +343,13 @@ def _placed(gray: np.ndarray, papers: Sequence[_Paper]) -> _Placed:
             frameless += [f.name for f in t.fields if not frame_pairs(f)]
         for got in done:
             fields.append(got.field)
-            if got.frame.missing:
+            if got.frame.missing or got.unsure:
                 unframed.append(got.field.name)
             if got.crossed:
                 crossed.append(got.field.name)
-            # 線の中心を結ぶ四隅にした欄にも付ける。曲がった用紙では、線で決めていない左右の辺の外に記入が残ることが
-            # あり、線の傾きがその目安になるため
-            if got.tilt > TILT_REVIEW:
+            # 4辺とも線で決めて四隅にした欄には付けない（範囲の辺が線に沿うので、線と辺のあいだにすき間はほとんどできない）。
+            # 上下の線だけを探す欄は、四隅にしても、左右の辺が線で確かめていない位置なので付ける
+            if got.tilt > TILT_REVIEW and not _four_sides(got):
                 tilted.append(got.field.name)
         try:
             shifted += rowshift.shifted(gray, t, H, [got.field for got in done])
@@ -339,22 +358,26 @@ def _placed(gray: np.ndarray, papers: Sequence[_Paper]) -> _Placed:
     return _Placed(fields, unframed, crossed, frameless, tilted, shifted, not on_page)
 
 
-def _field_notes(
-    fields: Sequence[Field],
-    unframed: Sequence[str],
-    crossed: Sequence[str],
-    frameless: Sequence[str],
-    tilted: Sequence[str],
-    shifted: Sequence[str],
-) -> list[str]:
+def _four_sides(got: Framed) -> bool:
+    """範囲を、4辺とも見つけた線の中心を結ぶ四隅にした欄か"""
+    return got.field.corners is not None and set(got.frame.found) == set(frames.PAIRS)
+
+
+def _field_notes(placed: _Placed) -> list[str]:
     """欄についての注記：範囲が欄に合っていないおそれのある欄の名前を、1つの文に挙げる。名前は、確かめる必要の高い順
     （線を越えた記入 → 隣の行に置かれている見込みの高い欄 → 線が見つからない欄 → 写真の枠のない欄 → 線が傾いた欄）に、
     重ねずに並べる"""
-    names = _merged(crossed, shifted, unframed, frameless, tilted)
+    names = _merged(
+        placed.crossed,
+        placed.shifted,
+        placed.unframed,
+        placed.frameless,
+        placed.tilted,
+    )
     if not names:
         return []
     # 「すべての欄」とするかは、ページの全部の欄の名前（同じ様式が2枚写っていれば同じ名前が重なる）と数で決める
-    return [field_note(names, [f.name for f in fields])]
+    return [field_note(names, [f.name for f in placed.fields])]
 
 
 def _merged(*groups: Sequence[str]) -> list[str]:
@@ -376,11 +399,13 @@ def below_limit(loc: Located, below: variants.Below) -> Located:
     return replace(loc, line_below=value)
 
 
-def from_variant(v: variants.Variant) -> Located:
+def from_variant(v: variants.Variant, other_paper: bool = False) -> Located:
     """バリエーションと決めた結果（variants.judge・relocate）を、ページの判別の結果にする。罫線の対応で置いた範囲は、
     見本と画素で合わせていないので、いつも要確認にする。枠の線を越えた記入がある欄は、欄の文を続けて、欄の名前を
-    挙げる（枠の線が見つからない欄の名前は挙げない。バリエーションの文が、全部の範囲がずれているおそれを言っている）"""
-    notes = [i18n.tr(VARIANT_NOTE, name=v.spec.name)]
+    挙げる（枠の線が見つからない欄の名前は挙げない。バリエーションの文が、全部の範囲がずれているおそれを言っている）。
+    other_paper は、様式を判別できない用紙も写っているか（OTHER_PAPER_NOTE を先に付ける）"""
+    notes = [i18n.tr(OTHER_PAPER_NOTE)] if other_paper else []
+    notes.append(i18n.tr(VARIANT_NOTE, name=v.spec.name))
     if v.crossed:
         notes.append(field_note(v.crossed, [f.name for f in v.fields]))
     return Located(
@@ -390,8 +415,22 @@ def from_variant(v: variants.Variant) -> Located:
         used=(v.spec,),
         unframed=v.unframed,
         crossed=v.crossed,
+        paper_notes=other_paper,
+        other_paper_only=other_paper,
         variant=True,
         line_match=tuple(v.match),
+    )
+
+
+def other_paper_beside(
+    gray: np.ndarray, quad: np.ndarray, cover: np.ndarray | None = None
+) -> bool:
+    """作業画像 gray で、用紙1枚の四隅 quad の外に、印字のある用紙が写っているか（位置合わせできた用紙で調べるときと
+    同じ判定）。用紙が作業画像の COVER_FULL 以上を覆うか（覆えば調べない）は、cover（省くと quad）で見る。quad を
+    帳票自身の余白の印刷まで広げたときに、広げた分で COVER_FULL を超えて、調べずに済ませないため"""
+    cover = quad if cover is None else cover
+    return align.quad_area(cover) < COVER_FULL * gray.size and paper.other_paper(
+        gray, [quad]
     )
 
 
@@ -406,9 +445,12 @@ def from_variant(v: variants.Variant) -> Located:
 # 見本の座標の画素）。線を探す範囲・線が欄の外まで続くかを見る所・越えた記入を探す帯が収まる大きさ
 FRAME_PAD = frames.DEPTH_V + max(frames.OUTSIDE[1], frames.REACH) + 4
 SAME_SIZE = 0.1
-# 写真と判定したページで、線の中心が範囲の辺より外に出る量（ページの作業画像の画素）がこれを超える欄に要確認を付ける。
-# 写真の作業画像の線の太さは約2画素で、中心がこれ（太さの半分）を超えて外に出ると、線の内側の縁と範囲の辺のあいだに
-# すき間ができ、線に接して書いた記入の端が墨消しの外に出るため
+# 写真と判定したページで、上か下の線の中心が、線の両端の平均の位置より外に出る量（ページの作業画像の画素）がこれを
+# 超える欄に要確認を付ける。写真の作業画像の線の太さは約2画素で、長方形の範囲では、中心がこれ（太さの半分）を超えて
+# 外に出ると、線の内側の縁と範囲の辺のあいだにすき間ができ、線に接して書いた記入の端が墨消しの外に出るため。4辺とも
+# 線の中心を結ぶ四隅にした欄には付けない（範囲の辺が線に沿うので、すき間はほとんどできない。欄の片方の端で、辺が線の
+# 内側の縁より2画素ほど内側に入ることはある）。上下の線だけを探す欄は、四隅に
+# しても付ける（左右の辺は線で確かめていない位置で、曲がった用紙では左右の端の外に記入が残ることがあるため）
 TILT_REVIEW = 1.0
 
 
@@ -436,6 +478,12 @@ BEND_LIMIT = 0.8
 # 写真でも、補正で動いた後の欄から同じ大きさの欄までの残りの距離が「探す範囲 + frames.DEPTH_H」より小さい範囲では
 # 探さない（その範囲に隣の欄の線が入る。16画素まで広げると、最も近い組（56画素）では、0.71倍動いただけで入る）
 BENT_DEPTHS_H = (10, 12, 16)
+# 曲がりの補正の変換を求められなかった欄を、線を探す範囲を広げて探し直して見つけた上と下の線の縁（内側と外側）が、移した欄の
+# 辺からこれ（見本の座標の画素）を超えて離れていたら、範囲は線に合わせ、線が見つからない欄として名前を挙げる（_searched_wider）。
+# ふつうの範囲で上と下の線を探す深さ（frames.DEPTH_H）と同じ値にした。その中の線は、位置合わせの変換で移した欄の線と
+# みなせるが、その外の線は、欄でない同じ高さの隣の行の線のこともあるため。扶養控除等申告書の「B 源泉控除対象親族 1」を
+# 46画素下にずらした写真では、見つけた線の縁が11画素離れ、基・配・特・所の申告書のずらさない「配偶者」では2画素だった
+WIDER_APART = 8
 
 
 def _same_size_moves(
@@ -524,7 +572,7 @@ def _unbent(
             if Hf is None:
                 # 補正の変換を求められなかった欄は、今の変換のまま、範囲だけを広げて探し直す
                 if not on_page:
-                    done[i] = _searched_wider(gray, t, i, H, H, done[i])
+                    done[i] = _searched_wider(gray, t, i, H, H, done[i], unbent=True)
                 continue
             if _toward_same_size(i, t.fields, H, Hf):
                 continue  # 同じ大きさの欄の位置へ動いたおそれがあるので、補正を使わない
@@ -544,10 +592,17 @@ def _searched_wider(
     H: np.ndarray,
     Hf: np.ndarray,
     result: Framed,
+    unbent: bool = False,
 ) -> Framed:
     """写真と判定したページで、見本 t の欄 i を変換 Hf で移して上と下の線が見つからなかった結果 result を、線を探す
     範囲を BENT_DEPTHS_H の順に広げて探し直したもの（見つからなければ result のまま）。Hf は曲がりの補正の変換で、
-    求められなかった欄では位置合わせの変換 H。広げた範囲に同じ大きさの隣の欄の線が入る広さでは、探さない"""
+    求められなかった欄（unbent）では位置合わせの変換 H。広げた範囲に同じ大きさの隣の欄の線が入る広さでは、探さない。
+
+    unbent の欄で、見つけた上と下の線の縁が、移した欄の辺から WIDER_APART を超えて離れていたら（_apart）、範囲は
+    線に合わせ、線が見つからない欄として名前を挙げる（unsure）。補正で動いた量がないので、同じ大きさの欄までの距離は
+    位置合わせの変換の誤差を含まず、広げた範囲に、欄でない同じ高さの隣の行（扶養控除等申告書の B 欄のすぐ下の
+    生年月日の行など）の線が入っても分からないため。位置合わせの変換の誤差が大きいときは、正しい欄の線に置けた欄にも
+    名前が挙がることがある（要確認が余計に付く向き）"""
     f = t.fields[i]
     pairs = frame_pairs(f)
     if "top_bottom" not in pairs or "top_bottom" in result.frame.found:
@@ -558,8 +613,20 @@ def _searched_wider(
             break
         wider = framed(gray, f, Hf, pairs, t.image, on_page=False, depth_h=depth)
         if "top_bottom" in wider.frame.found:
+            if unbent and _apart(f, wider.frame) > WIDER_APART:
+                return wider._replace(unsure=True)
             return wider
     return result
+
+
+def _apart(f: Field, frame: frames.Frame) -> float:
+    """見本の座標に移した欄の周りの画像（_framed_on_template。欄は FRAME_PAD から始まる）で見つけた上と下の線の縁
+    （内側と外側）のうち、移した欄の上と下の辺から最も離れたものの距離（見本の座標の画素）。線の中心でなく縁で測る
+    のは、太い線ほど中心より縁のほうが辺から離れるので、中心で測るより離れていると判断しやすく、広げて見つけた線が
+    隣の行の線かもしれないときに、名前を挙げる側に倒すため"""
+    top = max(abs(v - FRAME_PAD) for v in frame.top)
+    bottom = max(abs(v - (FRAME_PAD + f.h)) for v in frame.bottom)
+    return max(top, bottom)
 
 
 def framed(

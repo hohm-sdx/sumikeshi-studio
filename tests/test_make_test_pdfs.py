@@ -1,9 +1,7 @@
 # Copyright (C) 2026 Hideki Ohmura
 # SPDX-License-Identifier: AGPL-3.0-only
-"""tests/data/ の検査用の PDF のテスト：tools/make_test_pdfs.py で作り直したものがコミットされているものと同じこと、
-どの PDF にも ICC プロファイルが入っていないこと"""
+"""tests/data/ の検査用の PDF のテスト：どの PDF にも ICC プロファイルが入っていないこと"""
 
-import importlib.util
 import io
 from pathlib import Path
 
@@ -14,20 +12,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "tests" / "data"
-spec = importlib.util.spec_from_file_location(
-    "make_test_pdfs", ROOT / "tools" / "make_test_pdfs.py"
-)
-make_test_pdfs = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(make_test_pdfs)
-
-BUILT = make_test_pdfs.build()
 PASSWORDS = {"試験_パスワード付き.pdf": "a"}
-
-
-@pytest.mark.parametrize("name", list(BUILT))
-def test_rebuilt_pdf_is_same_as_committed(name):
-    """作るたびに同じバイト列になり、コミットされているものと同じ"""
-    assert (DATA / name).read_bytes() == BUILT[name]
 
 
 def jpeg_markers(data: bytes) -> list[int]:

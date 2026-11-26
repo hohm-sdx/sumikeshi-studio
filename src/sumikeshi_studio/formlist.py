@@ -49,17 +49,11 @@ from .widgets import Tone
 
 
 def read_template(spec: FormSpec):
-    """様式の型の画像（TEMPLATE_SCALE の解像度、グレー）を読む（裏のスレッドで呼ぶ）"""
-    import cv2
-    import numpy as np
+    """様式の型の画像（TEMPLATE_SCALE の解像度、グレー）を読む（裏のスレッドで呼ぶ）。解析と同じ確かめ方で読み、読め
+    なければ formstore.FormError"""
+    from . import align  # OpenCV を読み込むので、画面のプロセスでは使うときに読み込む
 
-    data = np.frombuffer(spec.image_path().read_bytes(), np.uint8)
-    image = cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
-    if image is None:
-        raise ValueError(
-            tr("様式「{name}」の見本の画像を、画像として読めません", name=spec.name)
-        )
-    return image
+    return align.read_template_image(spec)
 
 
 COLUMNS = [
@@ -295,7 +289,12 @@ class FormListPanel(QWidget):
             QMessageBox.warning(
                 self,
                 tr(formeditor.TITLE),
-                tr("見本の画像を読めません。{error}", error=error),
+                str(error)
+                if isinstance(error, formstore.FormError)
+                else tr(
+                    "見本の画像を読めません。{error}",
+                    error=f"{type(error).__name__}: {error}",
+                ),
             )
             return
         editor = formeditor.FormEditor(
@@ -384,7 +383,9 @@ class FormListPanel(QWidget):
         self, spec: FormSpec, page, fields, erase, notice, check, error
     ):
         self.set_busy(False)
-        warnings = formeditor.page_check_warnings(check, error, page.source.dpi)
+        warnings = formeditor.page_check_warnings(
+            check, error, formeditor.page_dpi(page)
+        )
         if warnings and not formeditor.ask(
             self, "\n".join([*warnings, tr(formstext.REPLACE_QUESTION)])
         ):

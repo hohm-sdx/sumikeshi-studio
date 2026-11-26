@@ -9,7 +9,7 @@
 """
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
@@ -18,6 +18,15 @@ from .i18n import tr
 
 if TYPE_CHECKING:
     from . import imaging, pipeline
+
+
+def with_result_dpi(source, result):
+    """ページ（imaging.SourcePage など）に、解析の結果（pipeline.PageResult）の解像度を入れたもの。PDF のページの
+    解像度は、開いただけでは決まらず（None）、解析のプロセスで決まる（imaging.resolve）。解像度が決まっているページと、
+    結果がないときは、そのまま返す"""
+    if result is None or source.dpi is not None:
+        return source
+    return replace(source, dpi=result.dpi)
 
 
 @dataclass(eq=False)

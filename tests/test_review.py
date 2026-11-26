@@ -976,7 +976,14 @@ def test_help_text():
     assert text.startswith(
         "操作の説明\n\n・欄・範囲をクリック：墨消しする・しないを切り替える\n"
     )
-    assert text.endswith("・Ctrl+0・Ctrl++・Ctrl+-：全体を表示・拡大・縮小")
+    assert text.endswith(
+        "・Ctrl+0・Ctrl++・Ctrl+-・Ctrl+ホイール：全体を表示・拡大・縮小"
+    )
+    assert (
+        "\n・枠の角をドラッグ：その角だけを動かす\n・Shift+枠の角をドラッグ：長方形として大きさを変える\n"
+        in text
+    )
+    assert len(reviewtext.HELP_ROWS) == 11
     assert "\n・右のボタンを押しながらドラッグ：ページをスクロールする\n" in text
 
 

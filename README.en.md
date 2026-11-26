@@ -2,7 +2,7 @@
 
 ![Sumikeshi Studio opening a form with fictional entries, checking the fields to redact, and exporting a redacted PDF (the screens in the video are in Japanese)](assets/demo.webp)
 
-The Japanese README is [README.md](README.md).
+English | [日本語](README.md)
 
 Sumikeshi Studio is a tool that, using the settings of a form registered in advance, automatically redacts (blacks out) fields on sheets filled in on that form. From scanned PDFs or photographs of sheets, it automatically detects the fields that the form specifies for redaction, and exports PDFs in which those fields are redacted. It works without an Internet connection.
 
@@ -14,7 +14,7 @@ Sumikeshi Studio is a tool that, using the settings of a form registered in adva
 - **Multiple forms in one go**: Open PDFs that mix different types of documents, or multiple files and folders at once, and the tool identifies the form of each page and redacts it.
 - **Redaction areas can be corrected**: The automatically determined redaction areas can be corrected on the screen. You can move frames, resize them, add areas, and switch redaction on or off for each field. Pages that the tool cannot fully decide automatically are marked "⚠ Review".
 - **No text data left in the PDF**: The output is an image-only PDF. The text data of the original PDF file is not kept.
-- **No external communication**: Everything runs only on the PC.
+- **No external communication**: Sumikeshi Studio does not send data outside the PC. For the events that the component used to read text (onnxruntime) records in Windows diagnostic data, see "Events recorded in Windows diagnostic data" in the README of the distribution package ([windows/README-en.txt](windows/README-en.txt)).
 
 ## Requirements
 
@@ -23,7 +23,7 @@ Sumikeshi Studio is a tool that, using the settings of a form registered in adva
 | OS | Operation has been checked on Windows 11 Pro (64-bit). Operation on each version of Windows has not been checked. |
 | Internet connection | No Internet connection is required. |
 | Python | The tool runs on Python. The distribution package includes Python 3.14. |
-| CPU and memory | If the CPU and memory have enough capacity (4 or more logical CPUs and 4 GB or more of free memory), the tool works in parallel. |
+| CPU and memory | If the CPU and memory have enough capacity (4 or more logical CPUs and 2 GB or more of free memory), the tool works in parallel. |
 
 ## Installation
 
@@ -32,27 +32,27 @@ Sumikeshi Studio is a tool that, using the settings of a form registered in adva
 The distribution package is a ZIP that contains Python, the libraries, and the tool itself (for how to build it, see "[Development](#development)"). The latest package is on the [Releases page](https://github.com/hohm-sdx/sumikeshi-studio/releases).
 
 > [!IMPORTANT]
-> If you downloaded the ZIP from the Internet (for example, from the Releases page), before extracting it, right-click the ZIP → "Properties", and if the "General" tab shows a security warning such as "This file came from another computer", select the "Unblock" check box → "OK". Windows marks a downloaded ZIP as coming from the Internet, and if you extract the ZIP with this mark, Smart App Control may block `setup.bat`. If the "General" tab of the ZIP file's properties shows no warning such as "This file came from another computer", this step is not needed. If `setup.bat` is blocked, delete the extracted folder, select "Unblock" for the ZIP, and then extract it again.
+> If you downloaded the ZIP from the Internet (for example, from the Releases page), before extracting it, right-click the ZIP → "Properties", and if the "General" tab shows a security warning such as "This file came from another computer", select the "Unblock" check box → "OK". Windows marks a downloaded ZIP as coming from the Internet, and if you extract the ZIP with this mark, Smart App Control may block `install.bat`. If the "General" tab of the ZIP file's properties shows no warning such as "This file came from another computer", this step is not needed. If `install.bat` is blocked, delete the extracted folder, select "Unblock" for the ZIP, and then extract it again.
 
 1. Extract all files from the ZIP (anywhere is fine, but installation for all users cannot be done from a network folder).
-2. Double-click `setup.bat` in the extracted `sumikeshi-studio` folder, and choose the type of installation (pressing Enter alone chooses 1). 1 (Just for me) moves the extracted folder to `%LOCALAPPDATA%\Programs\SumikeshiStudio` without administrator rights (on another drive, it copies the folder and deletes the original). 2 (All users of this PC) copies it to `C:\Program Files\SumikeshiStudio` with administrator rights. Both register the tool in "Installed apps" in Windows and create shortcuts on the Start menu and the desktop. They are named "墨消しスタジオ" on Japanese Windows and "Sumikeshi Studio" on other Windows. The installation messages are shown in the language selected in the tool (if none is selected, in the Windows display language).
+2. Double-click `install.bat` in the extracted `sumikeshi-studio` folder, and choose the type of installation (pressing Enter alone chooses 1). 1 (Just for me) moves the extracted folder to `%LOCALAPPDATA%\Programs\SumikeshiStudio` without administrator rights (on another drive, it copies the folder and deletes the original). 2 (All users of this PC) copies it to `C:\Program Files\SumikeshiStudio` with administrator rights. Both register the tool in "Installed apps" in Windows and create shortcuts on the Start menu and the desktop. They are named "墨消しスタジオ" on Japanese Windows and "Sumikeshi Studio" on other Windows. The installation messages are shown in the language selected in the tool (if none is selected, in the Windows display language).
 3. If there is no forms folder or no forms are registered, you are asked whether to add the National Tax Agency forms (the three declarations) as samples (for just-for-me installation, during the installation; for installation for all users, the first time each user starts the tool). The forms added here can be deleted later (delete them with "Edit forms" on the start screen).
 4. Start the tool from the shortcut on the Start menu or the desktop.
 
-To update to a new version, extract the new ZIP, run `setup.bat`, and choose the same type of installation as before (Just for me / All users of this PC). If you choose a different type, setup stops without changing anything. To uninstall, use "Installed apps" or `uninstall.bat` in the installed folder. Instructions for users, such as what uninstalling deletes and the forms folder when several users use the tool, are in the README in the ZIP (Japanese version [windows/README-ja.txt](windows/README-ja.txt), English version [windows/README-en.txt](windows/README-en.txt)).
+To update to a new version, extract the new ZIP and run `install.bat`. It does not ask for the type of installation, and updates the tool with the same type as before (Just for me / All users of this PC). To change the type, uninstall the tool first, and then install it. To uninstall, use "Installed apps" or `uninstall.bat` in the installed folder. Instructions for users, such as what uninstalling deletes and the forms folder when several users use the tool, are in the README in the ZIP (Japanese version [windows/README-ja.txt](windows/README-ja.txt), English version [windows/README-en.txt](windows/README-en.txt)). The changes in each version are in the release notes on the Releases page. Do not drag files onto the .bat files of the package (`install.bat`, `uninstall.bat`, `start.bat`, `sumikeshi-cli.bat`): if the name of a dragged file contains &, the part after it may be run as a separate command.
 
 ## Usage
 
 1. Start the tool from the shortcut on the Start menu or the desktop, and the start screen appears. It shows the forms folder and the list of forms used for redaction on this PC.
 2. Click "Open files" or "Open folder" and select PDF or image files or folders (you can also drag them onto the start screen). The redaction screen opens, analyzes all pages, and shows the fields to redact with orange frames.
-3. Check the redaction areas while moving through the pages in the list on the left, and correct them if needed. Clicking a field switches between redacting it and not redacting it. Dragging on an empty spot adds an area, and dragging inside or at a corner of a frame moves or resizes it. For pages with the "⚠ Review" or "⚠ Orientation" label, read the reason shown in the banner above the page, and check them with particular care. The "How to use" button shows the list of operations.
+3. Check the redaction areas while moving through the pages in the list on the left, and correct them if needed. Clicking a field switches between redacting it and not redacting it. Dragging on an empty spot adds an area, and dragging inside a frame moves it. Dragging a corner of a frame moves only that corner, and dragging a corner while holding down Shift resizes the frame as a rectangle. For pages with the "⚠ Review" or "⚠ Orientation" label, read the reason shown in the banner above the page, and check them with particular care. The "How to use" button shows the list of operations.
 4. Click "Export redacted PDF" (Ctrl+S) and select the output folder. One "original name_redacted.pdf" is created for each input file.
 
 To add or edit forms, click "Edit forms" on the start screen.
 
 ### Exporting from the command line (without the screen)
 
-You can also analyze files and export redacted PDFs without showing the screen (example: `sumikeshi.bat C:\scan --out C:\out`). Because nobody checks the pages on the screen, after the export, check the pages that need checking, which are printed to standard output and written to the work log. `--help` shows the list of arguments.
+You can also analyze files and export redacted PDFs without showing the screen (example: `sumikeshi-cli.bat C:\scan --out C:\out`). Because nobody checks the pages on the screen, after the export, check the pages that need checking, which are printed to standard output and written to the work log. `--help` shows the list of arguments.
 
 ## Development
 
@@ -78,13 +78,14 @@ uv run python tools/make_dist.py                       # Build the distribution 
 | `src/sumikeshi_studio/bundled_forms/` | The three sample forms included in the distribution package (the sample images made from the National Tax Agency's published forms, and the form information `.json`). If the forms folder has no forms, you are asked whether to add them during the installation (for installation for all users, when each user starts the tool for the first time) |
 | `src/sumikeshi_studio/icons/` | The original drawings (SVG) of the tool icon, and the icon file (`.ico`, used by the shortcuts and the app list) and the PNG images for the windows that are made from them |
 | `tools/make_templates.py` | Script that builds the sample forms |
-| `tools/make_icons.py` | Script that builds the icon file and the PNG images from the original SVG drawings (`tests/test_icons.py` checks that the built files match the drawings) |
+| `tools/make_icons.py` | Script that builds the icon file and the PNG images from the original SVG drawings (`tests/test_icons.py` checks the format of the icon file, the drawing for each size, and how the screen and the shortcuts use it) |
 | `tools/make_dist.py` | Script that builds the distribution package |
 | `tools/fetch_sources.py` | Script that downloads the source archives of the LGPL components in the package (Qt and GEOS) and checks their SHA-256 (the archives are attached to the Releases page) |
 | `tools/make_qt_licenses.py` | Script that creates, from the Qt source (qtbase), the license texts of the third-party components contained in the Qt DLLs kept in the package (`licenses/qt/`) and the corresponding rows of the mapping table |
-| `tools/make_test_pdfs.py` | Script that creates PDFs used for checks in the tests (5 of the `tests/data/試験_*.pdf` files) |
+| `tools/make_test_pdfs.py` | Script that creates PDFs used for checks in the tests (6 of the `tests/data/試験_*.pdf` files) |
+| `tools/make_test_images.py` | Script that creates images in formats the tool does not open, used for checks in the tests (the 4 `tests/data/試験_中身が*` files) |
 | `tests/` | Automated tests |
-| `tests/data/` | Test data (images rendered from the published forms, images with fictitious numbers and other entries written on them, and PDFs used for checks. All numbers, names, and company names are fictitious. `tests/data/README.md`) |
+| `tests/data/` | Test data (images rendered from the published forms, images with fictitious numbers and other entries written on them, and PDFs and images used for checks. All numbers, names, and company names are fictitious. `tests/data/README.md`) |
 | `windows/` | Installation files and instructions included in the distribution package |
 | `dist/` | Output location of the distribution package (not tracked by git) |
 | `LICENSE` | License of this tool (the full text of the AGPL-3.0) |

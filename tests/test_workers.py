@@ -6,6 +6,7 @@
 解析のプロセスが終わったときの続け方は、本物の解析のプロセスで確かめる。
 """
 
+import dataclasses
 import os
 import pickle
 import signal
@@ -15,9 +16,10 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
+import nativecrash
 import numpy as np
 import pytest
-from conftest import cached_analyze
+from conftest import BreakingPool, cached_analyze
 from userforms import bundled_forms, write_form
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -28,6 +30,7 @@ QtWidgets = pytest.importorskip(
 from sumikeshi_studio import (
     analysis,
     crashlog,
+    export,
     formstore,
     i18n,
     imaging,
@@ -59,20 +62,23 @@ def job(index, source=None, turns=None, engine=ocr.Engine.RAPIDOCR, formset=None
     return AnalysisJob(index, source or f"p{index}", turns, engine, formset)
 
 
-def fake_analyzer(monkeypatch, processes):
-    """解析の代わりの関数をスレッドで動かす Analyzer（解析のプロセスの数は processes）
+def fake_analyzer(monkeypatch, processes, pool=ThreadPoolExecutor):
+    """解析の代わりの関数をスレッドで動かす Analyzer（解析のプロセスの数は processes。executor は pool で作る）
 
     代わりの関数は、受け取ったページ（source）を calls に記録し、gate が開くまで終わらない。
     ページが "crash" なら毎回、"crash_once" なら1回目だけ、解析のプロセスが途中で終わったときと同じ
-    BrokenProcessPool を出す。届いた (番号, ページ, 結果, エラー) は received に入る。
+    BrokenProcessPool を出す。"crash_now" は、gate を待たずに毎回出す。届いた (番号, ページ, 結果, エラー) は
+    received に入る。
     """
     monkeypatch.setenv(workers.ENV_PROCESSES, str(processes))
-    monkeypatch.setattr(workers, "new_executor", lambda n: ThreadPoolExecutor(n))
+    monkeypatch.setattr(workers, "new_executor", pool)
     monkeypatch.setattr(analysis, "prepare", os.getpid)
     calls, gate = [], threading.Event()
 
     def analyze(source, quarter_turns, engine, formset=None):
         calls.append(source)
+        if source == "crash_now":
+            raise BrokenProcessPool("解析のプロセスが終わった")
         gate.wait(30)
         if source == "crash" or (source == "crash_once" and calls.count(source) == 1):
             raise BrokenProcessPool("解析のプロセスが終わった")
@@ -85,6 +91,11 @@ def fake_analyzer(monkeypatch, processes):
     monkeypatch.setattr(pipeline, "analyze", analyze)
     a = workers.Analyzer()
     a.start().result()
+    # 解析のプロセスの数だけ頼んだ準備がすべて終わるのを待つ（準備も、途中で終わったときに同時に動いていた処理に数える）
+    end = time.time() + 30
+    while a.live:
+        time.sleep(0.01)
+        assert time.time() < end, "準備が終わらなかった"
     received = []
     a.page_done.connect(lambda *args: received.append(args))
     return a, calls, gate, received
@@ -137,20 +148,22 @@ def test_preloader_tells_part_blocked_by_application_control(qapp):
     first, second = got[0].split("\n")
     assert first == (
         "Windows Smart App Control (or your organization's application control) blocked a component of the tool "
-        "(cv2). Extract the ZIP of the package and run setup.bat to see the names of the blocked components. "
+        "(cv2). Extract the ZIP of the package and run install.bat to see the names of the blocked components. "
         "A screenshot of this window may help investigate the cause."
     )
     assert second.startswith("(ImportError: DLL load failed while importing cv2: ")
 
 
 def test_process_count(monkeypatch):
-    """論理 CPU が4つ以上で、空きメモリが4GB以上なら2つ。環境変数で指定もできる"""
+    """論理 CPU が4つ以上で、空きメモリが2GB以上なら2つ（2GB ちょうどで2つ、それより1バイトでも少なければ1つ）。
+    環境変数で指定もできる"""
     import psutil
 
     monkeypatch.delenv(workers.ENV_PROCESSES, raising=False)
     memory = psutil.virtual_memory()
-    for cpus, available, want in [(8, 4 << 30, 2), (4, 6 << 30, 2), (3, 8 << 30, 1),
-                                  (8, (4 << 30) - 1, 1)]:  # fmt: skip
+    for cpus, available, want in [(8, 2 << 30, 2), (8, (2 << 30) - 1, 1),
+                                  (4, 2 << 30, 2), (3, 8 << 30, 1),
+                                  (8, 1 << 30, 1), (8, 4 << 30, 2)]:  # fmt: skip
         monkeypatch.setattr(os, "cpu_count", lambda c=cpus: c)
         monkeypatch.setattr(
             psutil, "virtual_memory", lambda a=available: memory._replace(available=a)
@@ -246,6 +259,173 @@ def test_page_is_retried_once_when_process_ends(fake, qapp):
     ]
 
 
+def test_page_crashing_process_does_not_fail_page_analyzed_with_it(qapp, monkeypatch):
+    """解析のプロセスが2つのとき、1ページ（crash_now）の解析で解析のプロセスが落ちると、同時に解析していたページ（p0）
+    の依頼も失敗する（executor 全体が壊れる）。p0 は、落ちたページと同時にやり直さず、巻き込まれて「処理できません」に
+    ならない。落ちたページだけが、1ページずつのやり直しでも2回落ちて「処理できません」になる。残りのページ（p2・p3）
+    も解析する"""
+    a, calls, gate, received = fake_analyzer(monkeypatch, 2, BreakingPool)
+    try:
+        # p0 が動き出してから crash_now を出す（本物と同じく、動き出す前に executor が壊れた依頼は動かないため）
+        a.submit(1, [job(0)])
+        wait_for(qapp, lambda: calls == ["p0"])
+        a.submit(1, [job(1, "crash_now"), job(2), job(3)])
+        # p0 が gate を待っているあいだに、crash_now が落ちる。巻き込まれた p0 をもう一度出すまで待ってから gate を開く
+        wait_for(qapp, lambda: calls.count("p0") >= 2 or len(received) >= 1)
+        gate.set()
+        wait_for(qapp, lambda: len(received) == 4)
+        got = {index: (result, error) for _, index, result, error in received}
+        assert got == {
+            0: ("p0 の結果", ""),
+            1: (None, workers.CRASHED),
+            2: ("p2 の結果", ""),
+            3: ("p3 の結果", ""),
+        }
+        # crash_now は、p0 と同時の1回（数えない）と、1ページずつの2回。p0 は、巻き込まれた1回と1ページずつの1回
+        assert (calls.count("crash_now"), calls.count("p0")) == (3, 2)
+        assert not a.alone_running and not a.queue and not a.together
+    finally:
+        gate.set()
+        a.shutdown()
+
+
+def test_page_crashing_process_alone_is_counted_at_once(qapp, monkeypatch):
+    """解析のプロセスが2つでも、ほかの依頼を出していないときに落ちたページは、そのページが原因なので、1回目から
+    やり直しの数に入れる（1つのときと同じく、2回落ちたら「処理できません」。1ページずつのやり直しを足さない）"""
+    a, calls, gate, received = fake_analyzer(monkeypatch, 2, BreakingPool)
+    try:
+        gate.set()
+        a.submit(1, [job(0, "crash_now")])
+        wait_for(qapp, lambda: len(received) == 1)
+        assert received == [(1, 0, None, workers.CRASHED)]
+        assert calls == ["crash_now", "crash_now"]
+        assert not a.live and not a.ended and not a.together
+    finally:
+        a.shutdown()
+
+
+class FailOnceAfterRestart(BreakingPool):
+    """作り直した2つ目の executor では、最初の解析の依頼を出すときに OSError になる（解析のプロセスを起動できない
+    ときの代わり）"""
+
+    made = 0
+
+    def __init__(self, n):
+        super().__init__(n)
+        FailOnceAfterRestart.made += 1
+        self.fail = FailOnceAfterRestart.made == 2
+
+    def submit(self, fn, *args):
+        if self.fail and analysis.analyze in args:
+            self.fail = False
+            raise OSError("プロセスを起動できない")
+        return super().submit(fn, *args)
+
+
+def test_failure_to_submit_does_not_stop_analysis(qapp, monkeypatch):
+    """依頼を解析のプロセスに出せなかった（解析のプロセスを起動できないなど）ページは、その理由で「処理できません」に
+    なり、残りのページと後から出した依頼の解析は続く（1ページずつのやり直しを出せなかったときも、ほかの依頼を
+    止めたままにしない）"""
+    FailOnceAfterRestart.made = 0
+    a, _, gate, received = fake_analyzer(monkeypatch, 1, FailOnceAfterRestart)
+    try:
+        gate.set()
+        a.submit(1, [job(0, "crash_now"), job(1)])
+        wait_for(qapp, lambda: len(received) == 2, sec=20)
+        a.submit(2, [job(5)])
+        wait_for(qapp, lambda: len(received) == 3, sec=20)
+        assert received == [
+            (1, 0, None, "OSError: プロセスを起動できない"),
+            (1, 1, "p1 の結果", ""),
+            (2, 5, "p5 の結果", ""),
+        ]
+        assert not a.alone_running and a.running == 0
+    finally:
+        a.shutdown()
+
+
+def test_alone_job_waits_until_other_work_ends(fake2, qapp):
+    """1ページずつの依頼（alone）は、解析中のページと call() で出した処理が終わるまで出さない"""
+    a, calls, gate, received = fake2
+    a.submit(1, [job(0)])
+    a.submit(1, [dataclasses.replace(job(1), alone=True)])
+    assert (a.running, [j.index for _, j in a.queue]) == (1, [1])
+    gate.set()
+    wait_for(qapp, lambda: len(received) == 2)
+    gate.clear()
+    drawn = []
+    a.call(
+        lambda: (gate.wait(30), "描き直し")[1], callback=lambda r, e: drawn.append(r)
+    )
+    a.submit(1, [dataclasses.replace(job(2), alone=True)])
+    assert (a.running, [j.index for _, j in a.queue]) == (0, [2])
+    gate.set()
+    wait_for(qapp, lambda: len(received) == 3 and drawn)
+    assert calls == ["p0", "p1", "p2"]
+
+
+def test_nothing_else_is_submitted_while_alone_job_runs(fake2, qapp):
+    """1ページずつの依頼（alone）を解析しているあいだは、解析のプロセスが空いていても、ほかの依頼を出さない"""
+    a, calls, gate, received = fake2
+    a.submit(1, [dataclasses.replace(job(0), alone=True)])
+    a.submit(1, [job(1)])
+    assert (a.running, [j.index for _, j in a.queue]) == (1, [1])
+    gate.set()
+    wait_for(qapp, lambda: len(received) == 2)
+    assert calls == ["p0", "p1"]
+
+
+def crash():
+    raise BrokenProcessPool("解析のプロセスが終わった")
+
+
+def test_crash_in_call_is_not_blamed_on_page(qapp, monkeypatch):
+    """call() で出した処理（様式の画面の解析・描き直しなど）で解析のプロセスが落ちても、同時に解析していたページを原因と
+    みなさず、1ページずつ解析し直す。そのあいだに頼んだ call は、そのページが済んでから出す（同時に動かさない）"""
+    a, calls, gate, received = fake_analyzer(monkeypatch, 2, BreakingPool)
+    errors = []
+    try:
+        a.submit(1, [job(0)])
+        wait_for(qapp, lambda: calls == ["p0"])
+        a.call(crash, callback=lambda r, e: errors.append(str(e)))
+        wait_for(qapp, lambda: calls.count("p0") == 2 and errors)
+        a.call(crash, callback=lambda r, e: errors.append(str(e)))
+        time.sleep(0.3)  # 解析のプロセスは空いているが、出さない
+        qapp.processEvents()
+        assert (a.calling, len(a.waiting_calls), len(errors)) == (0, 1, 1)
+        gate.set()
+        wait_for(qapp, lambda: received and len(errors) == 2)
+        assert received == [(1, 0, "p0 の結果", "")]
+        assert errors == [workers.CRASHED] * 2
+        assert calls.count("p0") == 2
+    finally:
+        gate.set()
+        a.shutdown()
+
+
+def test_crash_in_export_is_not_blamed_on_page(qapp, monkeypatch):
+    """出力でページを墨消しする処理で解析のプロセスが落ちても、同時に解析していたページを原因とみなさない"""
+    a, calls, gate, received = fake_analyzer(monkeypatch, 2, BreakingPool)
+
+    def mask_page(job):
+        raise BrokenProcessPool("解析のプロセスが終わった")
+
+    monkeypatch.setattr(analysis, "mask_page", mask_page)
+    try:
+        a.submit(1, [job(0)])
+        for n in (2, 3):
+            wait_for(qapp, lambda n=n: calls.count("p0") == n - 1)
+            with pytest.raises(BrokenProcessPool):
+                list(a.masker()(["出力するページ"]))
+            wait_for(qapp, lambda n=n: calls.count("p0") == n)
+        gate.set()
+        wait_for(qapp, lambda: received)
+        assert received == [(1, 0, "p0 の結果", "")]
+    finally:
+        gate.set()
+        a.shutdown()
+
+
 def test_error_of_one_page_does_not_stop_the_rest(fake, qapp):
     """1ページのエラーは、そのページのエラーとして届き、残りのページの解析は続く。様式の型の画像を読めない
     ときは、文だけを届ける"""
@@ -258,6 +438,238 @@ def test_error_of_one_page_does_not_stop_the_rest(fake, qapp):
         (1, 1, None, "様式「住宅」の見本の画像を読めません。（パス）"),
         (1, 2, "p2 の結果", ""),
     ]
+
+
+def test_input_error_is_told_without_class_name(fake, qapp, monkeypatch):
+    """入力のファイルを読めない理由（imaging.InputError）は、例外のクラスの名前を付けずに、文だけを届ける"""
+    a, _, _, received = fake
+
+    def analyze(source, quarter_turns, engine, formset=None):
+        raise imaging.InputError("PDF の1ページ目を読めません: bad.pdf")
+
+    monkeypatch.setattr(pipeline, "analyze", analyze)
+    a.submit(1, [job(0)])
+    wait_for(qapp, lambda: received, sec=20)
+    assert received == [(1, 0, None, "PDF の1ページ目を読めません: bad.pdf")]
+
+
+def test_crashing_page_is_not_retried_forever_with_redraw(qapp, monkeypatch):
+    """解析のプロセスが1つのとき、解析のプロセスを落とすページを解析しているあいだに描き直し（call）が出ていて、描き直しが
+    失敗するたびに同じ描き直しを頼み直す呼び手（墨消しの画面の work_drawn → prefetch）がいても、そのページは2回目の
+    1ページずつのやり直しで落ちたら「処理できません」になり、後ろのページも解析する。1ページずつで出した依頼が落ちたら、
+    ほかの処理と同時でも、やり直しの数に入れる。1ページずつの依頼が動いているあいだは、call を出さずに待たせる"""
+    a, calls, gate, received = fake_analyzer(monkeypatch, 1, BreakingPool)
+    inner = pipeline.analyze
+
+    def analyze(source, *args, **kwargs):
+        if source == "slow_crash":
+            calls.append(source)
+            time.sleep(0.2)  # 細工したページは、落ちるまでに時間がかかる
+            raise BrokenProcessPool("解析のプロセスが終わった")
+        return inner(source, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "analyze", analyze)
+    draws = []
+
+    def callback(result, error):
+        draws.append(error)
+        if error is not None:
+            a.call(lambda: "描き直し", callback=callback)
+
+    gate.set()
+    try:
+        a.submit(1, [job(0, "slow_crash"), job(1)])
+        wait_for(qapp, lambda: "slow_crash" in calls, sec=30)
+        a.call(
+            lambda: "描き直し", callback=callback
+        )  # ページ0の解析中に、描き直しを頼む
+        end = (
+            time.time() + 15
+        )  # 止まらないときに、テストが終わらなくならないよう打ち切る
+        while time.time() < end and len(received) < 2:
+            qapp.processEvents()
+            time.sleep(0.01)
+        got = {index: error for _, index, _, error in received}
+        assert got == {0: workers.CRASHED, 1: ""}, (calls.count("slow_crash"), draws)
+        assert calls.count("slow_crash") <= 3
+    finally:
+        a.shutdown()
+
+
+def test_alone_job_crashing_with_export_counts_as_retry(qapp, monkeypatch):
+    """1ページずつで出した依頼が、出力の墨消しと同時に落ちても、やり直しの数に入れる（2回目で「処理できません」）"""
+    a, calls, gate, received = fake_analyzer(monkeypatch, 2, BreakingPool)
+    masking, release = threading.Event(), threading.Event()
+
+    def mask_page(job):
+        masking.set()
+        release.wait(30)
+        return job
+
+    monkeypatch.setattr(analysis, "mask_page", mask_page)
+    exported = []
+
+    def export(masker):
+        try:
+            exported.extend(masker(["出力するページ"]))
+        except BrokenProcessPool as e:
+            exported.append(e)
+
+    try:
+        a.submit(1, [dataclasses.replace(job(0, "crash"), alone=True)])
+        wait_for(qapp, lambda: calls == ["crash"])
+        threading.Thread(target=export, args=(a.masker(),), daemon=True).start()
+        assert masking.wait(10)
+        gate.set()  # 墨消しと同時に落ちる
+        wait_for(qapp, lambda: received, sec=20)
+        assert received == [(1, 0, None, workers.CRASHED)]
+        assert calls.count("crash") == 2
+        assert isinstance(exported[0], BrokenProcessPool)
+    finally:
+        release.set()
+        gate.set()
+        a.shutdown()
+
+
+def test_job_from_before_clear_is_not_retried(fake, qapp, monkeypatch):
+    """開き直して待っている依頼を取り消した（clear）後に、解析中だった前のファイルのページで解析のプロセスが落ちても、
+    そのページをやり直さず、新しいファイルのページを先に解析する"""
+    a, calls, gate, received = fake
+    monkeypatch.setenv(workers.ENV_PROCESSES, "1")
+    a.submit(1, [job(0, "crash"), job(1)])
+    wait_for(qapp, lambda: calls == ["crash"])
+    a.clear()
+    a.submit(2, [job(5), job(6)])
+    gate.set()
+    wait_for(qapp, lambda: len([r for r in received if r[0] == 2]) == 2)
+    assert calls == ["crash", "p5", "p6"]
+
+
+def test_start_fails_when_second_preparation_cannot_be_submitted(qapp, monkeypatch):
+    """解析のプロセスが2つのとき、2つ目の準備を出せなければ（解析のプロセスを起動できないなど）、起動の準備は、その
+    失敗を返す（成功とみなさない）"""
+
+    class FailSecond(BreakingPool):
+        made = 0
+
+        def submit(self, fn, *args):
+            FailSecond.made += 1
+            if FailSecond.made == 2:
+                raise OSError("プロセスを起動できない")
+            return super().submit(fn, *args)
+
+    monkeypatch.setenv(workers.ENV_PROCESSES, "2")
+    monkeypatch.setattr(workers, "new_executor", FailSecond)
+    monkeypatch.setattr(analysis, "prepare", os.getpid)
+    a = workers.Analyzer()
+    try:
+        with pytest.raises(OSError, match="プロセスを起動できない"):
+            a.start().result(timeout=10)
+    finally:
+        a.shutdown()
+
+
+def test_crash_in_call_restarts_process_before_export(qapp, monkeypatch):
+    """call で出した処理で解析のプロセスが落ちたら、次の依頼を待たずに作り直す（その後に出力を始めても、落ちた解析の
+    プロセスで墨消ししない）"""
+    a, _calls, gate, _received = fake_analyzer(monkeypatch, 1, BreakingPool)
+    monkeypatch.setattr(analysis, "mask_page", lambda job: f"{job} を墨消しした")
+    errors = []
+    try:
+        old = a.executor
+        a.call(crash, callback=lambda r, e: errors.append(e))
+        wait_for(qapp, lambda: errors, sec=20)
+        assert a.executor is not old
+        assert list(a.masker()(["出力するページ"])) == ["出力するページ を墨消しした"]
+    finally:
+        gate.set()
+        a.shutdown()
+
+
+def test_crash_of_page_and_call_restarts_process_once(qapp, monkeypatch):
+    """解析中のページと call で出した処理が、同じ解析のプロセスの組で一緒に失敗しても、作り直すのは1回だけ（先に届いた
+    方が作り直し、後の方は、作り直した組を終えない）"""
+    made = []
+
+    def counting(n):
+        made.append(n)
+        return BreakingPool(n)
+
+    a, calls, gate, received = fake_analyzer(monkeypatch, 2, counting)
+    errors = []
+    try:
+        a.submit(1, [job(0)])
+        wait_for(qapp, lambda: calls == ["p0"])
+        a.call(crash, callback=lambda r, e: errors.append(str(e)))
+        wait_for(qapp, lambda: errors and calls.count("p0") == 2)
+        gate.set()
+        wait_for(qapp, lambda: received)
+        assert received == [(1, 0, "p0 の結果", "")]
+        assert made == [2, 2]  # 最初の組と、作り直した1組
+    finally:
+        gate.set()
+        a.shutdown()
+
+
+def test_crash_in_export_restarts_process_before_next_export(qapp, monkeypatch):
+    """出力の墨消しで解析のプロセスが落ちたら、解析の依頼や call を待たずに作り直す（次の出力の1つ目のファイルも、
+    作り直した解析のプロセスで墨消しする）"""
+    a, _calls, gate, _received = fake_analyzer(monkeypatch, 1, BreakingPool)
+
+    def mask_page(job):
+        if job == "落とすページ":
+            raise BrokenProcessPool("解析のプロセスが終わった")
+        return f"{job} を墨消しした"
+
+    monkeypatch.setattr(analysis, "mask_page", mask_page)
+    try:
+        old = a.executor
+        with pytest.raises(BrokenProcessPool):
+            list(a.masker()(["落とすページ"]))
+        end = time.time() + 2
+        while time.time() < end and a.executor is old:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert a.executor is not old
+        assert list(a.masker()(["次のページ"])) == ["次のページ を墨消しした"]
+    finally:
+        gate.set()
+        a.shutdown()
+
+
+def test_export_masking_moves_to_new_process_after_limit_to_one(qapp, monkeypatch):
+    """出力のスレッドが墨消しする関数（masker）を受け取った後、最初の墨消しを出す前に、解析のプロセスを1つに減らして
+    作り直しても、そのファイルは、作り直した解析のプロセスで墨消しする"""
+    a, _calls, gate, _received = fake_analyzer(monkeypatch, 2)
+    monkeypatch.setattr(analysis, "mask_page", lambda job: f"{job} を墨消しした")
+    try:
+        masker = a.masker()
+        old = a.executor
+        a.limit_to_one()  # 解析中のページも call もないので、すぐ作り直す
+        assert a.executor is not old
+        assert list(masker(["ページ"])) == ["ページ を墨消しした"]
+    finally:
+        gate.set()
+        a.shutdown()
+
+
+def test_export_masking_uses_language_of_screen(qapp, monkeypatch):
+    """出力でページを墨消しする処理も、ほかの依頼と同じく、画面の言語を解析のプロセスに渡す（analysis.call_in）"""
+    a, _calls, gate, _received = fake_analyzer(monkeypatch, 1)
+    monkeypatch.setattr(analysis, "mask_page", lambda job: i18n.language())
+    try:
+        i18n.set_language(i18n.JA)
+        masker = a.masker()
+        i18n.set_language(i18n.EN)
+        assert list(masker(["ページ"])) == [i18n.JA]  # masker を作ったときの言語
+        i18n.set_language(
+            i18n.EN
+        )  # 代わりの executor はスレッドで動くので、上の墨消しで日本語に戻っている
+        assert list(a.masker()(["ページ"])) == [i18n.EN]
+    finally:
+        i18n.set_language(i18n.JA)
+        gate.set()
+        a.shutdown()
 
 
 # ---------------------------------------------------------------- 本物の解析のプロセス
@@ -422,6 +834,69 @@ def test_two_processes_retry_running_pages(qapp, scan, monkeypatch, tmp_path):
         assert sorted(index for index, _, _ in got) == [0, 1]
         for _, result, error in got:
             assert error == "" and len(result.boxes) == FIELDS
+    finally:
+        a.shutdown()
+
+
+def test_native_exception_is_told_from_ordinary_os_errors():
+    """Windows の例外から ctypes が作った OSError（winerror が負の数のもの、winerror がなく「exception: 」で始まる文のもの）を
+    見分け、ふつうの OSError（ファイルを読めない・アクセスが拒否されたなど。winerror が正の数か None）を巻き込まない"""
+    denied = PermissionError(13, "アクセスが拒否されました", "a.pdf")
+    denied.winerror = 5
+    ordinary = [
+        FileNotFoundError(2, "見つかりません", "a.pdf"),
+        denied,
+        OSError("ディスクがいっぱいです"),
+        MemoryError(),
+        RuntimeError("exception: access violation reading 0x0"),
+    ]
+    native = [
+        nativecrash.native_error(),
+        OSError("exception: access violation reading 0x0000000000000000"),
+        OSError("exception: stack overflow"),
+    ]
+    assert [analysis.native_exception(e) for e in ordinary] == [False] * 5
+    assert [analysis.native_exception(e) for e in native] == [True] * 3
+
+
+def test_windows_exception_ends_analysis_process(qapp, scan, monkeypatch):
+    """解析のプロセスで、Windows の例外から作られた OSError が出たら（PDFium の中の C++ の例外を ctypes が受け止めたとき）、
+    その解析のプロセスを終わらせ、ほかの異常終了と同じに扱う：ページの解析では、作り直して1ページずつやり直し、2回目で
+    「解析のプロセスが途中で終了しました。」にする。call() と出力の墨消しも同じく失敗する。その後も、作り直した解析の
+    プロセスで、ほかのページの解析・call()・出力の墨消しができる（同じプロセスで続けると、PDFium が取ったメモリが残り、
+    後の墨消しがメモリの上限で失敗した）"""
+    monkeypatch.setenv(workers.ENV_PROCESSES, "1")
+    a = workers.Analyzer()
+    try:
+        first = a.start().result(timeout=300)
+        page = imaging.open_pages(scan("2027bun_01", filled=True))[0]
+        got = {
+            index: (result, error)
+            for index, result, error in run(
+                qapp, a, [job(0, nativecrash.NativeErrorPage()), job(1, page)]
+            )
+        }
+        assert got[0] == (None, workers.CRASHED)
+        assert got[1][1] == "" and len(got[1][0].boxes) == FIELDS
+        calls = []
+        a.call(nativecrash.raise_native, callback=lambda r, e: calls.append(e))
+        wait_for(qapp, lambda: calls, sec=120)
+        assert str(calls[0]) == workers.CRASHED
+        pids = []
+        a.call(os.getpid, callback=lambda r, e: pids.append((r, e)))
+        wait_for(qapp, lambda: pids, sec=120)
+        assert pids[0][1] is None and pids[0][0] != first
+        with pytest.raises(BrokenProcessPool):
+            list(a.masker()([export.PageJob.of(nativecrash.NativeErrorPage(), None)]))
+        old = a.executor
+        wait_for(qapp, lambda: a.executor is not old, sec=30)
+        (image,) = a.masker()([export.PageJob.of(page, None)])
+        assert image.jpeg[:2] == b"\xff\xd8"  # JPEG
+        log = Path(os.environ["LOCALAPPDATA"]) / "SumikeshiStudio" / crashlog.LOG_NAME
+        text = log.read_text("utf-8")
+        title = "Windows exception in a native call (ending the analysis process)"
+        assert text.count(title) >= 4  # ページの2回・call()・出力の墨消し
+        assert "Windows Error 0xe06d7363" in text
     finally:
         a.shutdown()
 

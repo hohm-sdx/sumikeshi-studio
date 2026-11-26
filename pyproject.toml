@@ -1,6 +1,6 @@
 [project]
 name = "sumikeshi-studio"
-version = "0.3.1"
+version = "0.4.0"
 description = "スキャンした帳票の、様式で決めた欄を墨消しするツール"
 readme = "README.md"
 license = "AGPL-3.0-only"

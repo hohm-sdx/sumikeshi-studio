@@ -46,8 +46,9 @@ def left_digits(res, filled, blank):
 def to_work(pts, photo_shape, page, res):
     """試験画像の上の点を、作業画像の上の点に移す（imaging.render と imaging.correct と同じ計算）"""
     h, w = photo_shape
-    if abs(imaging.WORK_DPI - page.dpi) > 0.5:
-        f = imaging.WORK_DPI / page.dpi
+    dpi = imaging.resolve(page).dpi
+    if abs(imaging.WORK_DPI - dpi) > 0.5:
+        f = imaging.WORK_DPI / dpi
         pts = pts * f
         w, h = round(w * f), round(h * f)
     for _ in range(res.quarter_turns % 4):  # 反時計回りに90度

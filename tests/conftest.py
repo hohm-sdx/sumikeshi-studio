@@ -15,7 +15,10 @@ import os
 import pickle
 import sys
 import tempfile
+import threading
 import types
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import netguard
@@ -52,6 +55,9 @@ except ImportError:  # Windows：ワーカーのあいだでは共有せず、�
 # テストのあいだ、インターネットへの通信を禁じる（netguard.py）。conftest.py は pytest-xdist の各ワーカーでも
 # 読み込まれるので、どのワーカーでも効く
 netguard.install()
+# onnxruntime の利用状況の記録と送信を、テストのプロセスと、そこから起動するプロセスでも止める（ツールは
+# ocr._engine で止めるが、テストが onnxruntime を先に読み込んでも止まるように）
+os.environ["ORT_DISABLE_TELEMETRY"] = "1"
 
 # 見本のスキャンを使うテストは、見本がなければ飛ばす
 needs_sample_scan = pytest.mark.skipif(
@@ -296,6 +302,69 @@ def reference(tmp_path_factory):
     return get
 
 
+class BreakingPool:
+    """解析のプロセスの executor の代わり：依頼をスレッドで動かし、依頼の1つが BrokenProcessPool を出したら、本物の
+    解析のプロセスが途中で終わったときと同じく、そのとき出していたほかの依頼もすべて BrokenProcessPool にする（executor
+    全体が壊れる）。失敗させるのは、本物（ProcessPoolExecutor の pending_work_items）と同じく出した順。壊れた後は依頼を
+    受け付けない。巻き込まれた依頼のスレッドは動き続けるが、結果は届かない。shutdown(cancel_futures=True) は、本物と
+    同じく、まだ動き始めていない依頼だけを取り消す（ThreadPoolExecutor をそのまま使うと、壊れた後に待っていた依頼が、
+    失敗でなく取り消しで終わる）"""
+
+    def __init__(self, n):
+        self.pool = ThreadPoolExecutor(n)
+        self.pending: dict[Future, None] = {}  # 出した順
+        self.broken = False
+        self.lock = threading.Lock()
+
+    def submit(self, fn, *args):
+        with self.lock:
+            if self.broken:
+                raise BrokenProcessPool("解析のプロセスが終わった後")
+            outer = Future()
+            self.pending[outer] = None
+
+        def run():
+            with self.lock:
+                if outer not in self.pending:
+                    return  # ほかの依頼で壊れたか、取り消された
+                outer.set_running_or_notify_cancel()
+            try:
+                result = fn(*args)
+            except BrokenProcessPool:
+                with self.lock:
+                    self.broken = True
+                    victims = list(self.pending)
+                    self.pending.clear()
+                for f in victims:
+                    if not f.done():
+                        f.set_exception(BrokenProcessPool("解析のプロセスが終わった"))
+                return
+            except BaseException as e:  # noqa: BLE001  依頼の失敗として届ける
+                with self.lock:
+                    if self.pending.pop(outer, False) is False:
+                        return  # ほかの依頼で壊れた後に終わった（結果は届かない）
+                outer.set_exception(e)
+                return
+            with self.lock:
+                if outer not in self.pending:
+                    return  # ほかの依頼で壊れた後に終わった（結果は届かない）
+                self.pending.pop(outer, None)
+            outer.set_result(result)
+
+        self.pool.submit(run)
+        return outer
+
+    def shutdown(self, wait=True, cancel_futures=False):
+        if cancel_futures:
+            with self.lock:
+                waiting = [f for f in self.pending if not f.running()]
+                for f in waiting:
+                    del self.pending[f]
+            for f in waiting:
+                f.cancel()
+        self.pool.shutdown(wait=False, cancel_futures=cancel_futures)
+
+
 # ---- 画面のテストのフィクスチャ
 # このファイルは画面の部品（PySide6）を読み込めない環境でも読み込むので、PySide6・画面のモジュール・tests/gui.py は、
 # フィクスチャの中で読み込む。画面のテストのファイルは tests/gui.py を読み込み、その環境では飛ばされる。
@@ -305,8 +374,6 @@ def reference(tmp_path_factory):
 def gui_env(tmp_path, monkeypatch):
     """画面のテストの環境（作業ログ・設定・様式の既定の場所はテストごと。解析はスレッドで行う）。
     出したメッセージの文の一覧と、QApplication を返す"""
-    from concurrent.futures import ThreadPoolExecutor
-
     from gui import QSettings, QtWidgets
 
     from sumikeshi_studio import (
@@ -329,7 +396,7 @@ def gui_env(tmp_path, monkeypatch):
     # なくスレッドで行う（解析のプロセスでの動きは、test_workers.py と、下の画面のプロセスのテストで確かめる）
     monkeypatch.setattr(pipeline, "analyze", cached_analyze)
     monkeypatch.setenv(workers.ENV_PROCESSES, "1")
-    monkeypatch.setattr(workers, "new_executor", lambda n: ThreadPoolExecutor(n))
+    monkeypatch.setattr(workers, "new_executor", BreakingPool)
     shown = []
     box = QtWidgets.QMessageBox
     for name in ("information", "warning", "critical"):

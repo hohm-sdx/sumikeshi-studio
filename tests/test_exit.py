@@ -39,6 +39,75 @@ def test_windows_job_structures_and_other_platforms():
         assert not winjob.active()
 
 
+def test_analysis_process_limits_its_memory_with_nested_job(monkeypatch):
+    """解析のプロセスは、立ち上げるとき（analysis.configure）に、確保できるメモリを ANALYSIS_MEMORY_LIMIT（3GB）に限る
+    ジョブ（JOB_OBJECT_LIMIT_PROCESS_MEMORY）に自分を入れる。画面のプロセスのジョブ（enter）とは別のジョブで、画面の
+    プロセスには上限を付けない。Windows の関数は置き換えて確かめる（効き方は Windows の PC で確かめる）"""
+    import ctypes
+
+    from sumikeshi_studio import analysis, ocr, winjob
+
+    assert winjob.ANALYSIS_MEMORY_LIMIT == 3 * 1024**3
+    calls = []
+
+    class Kernel32:
+        def CreateJobObjectW(self, attributes, name):
+            calls.append("create")
+            return 7
+
+        def SetInformationJobObject(self, job, kind, info, size):
+            got = info._obj  # ctypes.byref で渡された構造体
+            calls.append(
+                (
+                    "set",
+                    job,
+                    kind,
+                    got.BasicLimitInformation.LimitFlags,
+                    got.ProcessMemoryLimit,
+                    size,
+                )
+            )
+            return 1
+
+        def GetCurrentProcess(self):
+            return -1
+
+        def AssignProcessToJobObject(self, job, process):
+            calls.append(("assign", job, process))
+            return 1
+
+    job, reason = winjob._new_job(
+        Kernel32(), winjob.JOB_OBJECT_LIMIT_PROCESS_MEMORY, winjob.ANALYSIS_MEMORY_LIMIT
+    )
+    assert (job, reason) == (7, "")
+    assert calls == [
+        "create",
+        (
+            "set",
+            7,
+            winjob.JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+            winjob.JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+            3 * 1024**3,
+            ctypes.sizeof(winjob.JOBOBJECT_EXTENDED_LIMIT_INFORMATION),
+        ),
+        ("assign", 7, -1),
+    ]
+    # 画面のプロセスのジョブは、閉じたら中のプロセスを終わらせるだけで、メモリの上限を付けない
+    calls.clear()
+    winjob._new_job(Kernel32(), winjob.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+    assert calls[1][3:5] == (winjob.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, 0)
+    # 解析のプロセスの立ち上げで呼ぶ（Windows のほかでは何もしない）
+    limited = []
+    monkeypatch.setattr(winjob, "limit_memory", lambda: limited.append(1) or "")
+    monkeypatch.setattr(analysis.signal, "signal", lambda *args: None)
+    monkeypatch.setattr("sumikeshi_studio.crashlog.setup", lambda role: None)
+    analysis.configure(ocr.THREADS)
+    assert limited == [1]
+    if sys.platform != "win32":
+        monkeypatch.undo()
+        assert winjob.limit_memory() == "not Windows; a job object is not used"
+
+
 def test_closing_launcher_while_preparing(new_launcher, monkeypatch):
     """起動の準備の途中で起動の画面を閉じたとき、ジョブに入っていれば後始末を飛ばして終え、入っていなければ
     今までどおり解析のプロセスを終えてから終える"""

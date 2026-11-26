@@ -10,7 +10,7 @@
 読み込みは LoadLibraryExW の DONT_RESOLVE_DLL_REFERENCES で行う（その部品が使う DLL は読み込まず、初めの処理も
 動かさない）。止められたかは、Windows のエラーの番号 4551（ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION）で見分ける。
 この指定でも、スマート アプリ コントロールは判定する（Windows の PC での試験で、pypdfium2 5.15.1 の pdfium.dll を
-4551 で読み込めず、setup.bat がその部品を示した）。
+4551 で読み込めず、導入のスクリプトがその部品を示した）。
 
 使い方：python.exe -I -m sumikeshi_studio.nativecheck
 止められた部品がなければ 0、ツールが使わない部品だけなら 10、ツールが使う部品が止められたら 20 で終わる
@@ -129,7 +129,7 @@ def report(python: Path, blocked: list[Path]) -> tuple[int, str]:
         lines += [
             tr(
                 "Windows のスマート アプリ コントロール（または会社のアプリケーション制御）が、"
-                "ツールが使わない次の部品を止めました。ツールの動きには影響しません。"
+                "次の部品を止めました。解析と出力では使わない部品なので、ツールの動作には影響しない見込みです。"
             ),
             *(i18n.bullet(label(python, p)) for p in others),
         ]
@@ -144,14 +144,14 @@ def policy_message(error: str) -> str | None:
     if name:
         text = tr(
             "Windows のスマート アプリ コントロール（または会社のアプリケーション制御）が、"
-            "ツールの部品（{name}）を止めました。配布用パッケージの ZIP を展開して setup.bat を実行すると、"
+            "ツールの部品（{name}）を止めました。配布用パッケージの ZIP を展開して install.bat を実行すると、"
             "止められた部品の名前が出ます。",
             name=name[1],
         )
     else:
         text = tr(
             "Windows のスマート アプリ コントロール（または会社のアプリケーション制御）が、"
-            "ツールの部品を止めました。配布用パッケージの ZIP を展開して setup.bat を実行すると、"
+            "ツールの部品を止めました。配布用パッケージの ZIP を展開して install.bat を実行すると、"
             "止められた部品の名前が出ます。"
         )
     return i18n.sentences(text, tr(TELL))

@@ -7,7 +7,8 @@ import math
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
@@ -41,6 +42,12 @@ DRAWING_KINDS = (
 # 縦と横の解像度がこの割合を超えて違う画像（ファクスの 204×98dpi など）は、低いほうの向きを拡大して画素を
 # 正方形にする
 ASPECT_TOLERANCE = 0.02
+# 縦と横の解像度の比として使う上限（ファクスの 204×98dpi は約2.1）。超える記録は、比も解像度も使わない（A4 とみなす）。
+# 比で引き伸ばすので、数KB のファイルの記録だけで大きな配列を作らないため
+ASPECT_MAX = 4.0
+# 配列にする画像の画素の数の上限。Pillow が展開の爆弾として開かない数（保存された画素の数で見る）と同じにし、解像度の比で
+# 引き伸ばした後の数と、複数ページの TIFF の2ページ目以降（Pillow は開くときに1ページ目だけを見る）にも当てる
+MAX_PIXELS = 2 * Image.MAX_IMAGE_PIXELS
 # TIFF の画像の種類（NewSubfileType、タグ254）のうち、ページにしないもの：縮小版（1）と透明のマスク（4）。
 # 古い SubfileType（タグ255）では、2 が縮小版
 TIFF_NEW_SUBFILE_TYPE = 254
@@ -103,7 +110,9 @@ class SourcePage:
 
     path: Path
     index: int  # ファイルの中のページ番号（0始まり）
-    dpi: float  # 元の画像の、実際の用紙に対する解像度。出力もこの解像度で行う
+    # 元の画像の、実際の用紙に対する解像度。出力もこの解像度で行う。PDF のページは、開いただけでは None（ページの中身を
+    # 読まないと決まらない。resolve で決める）
+    dpi: float | None
     zoom: float = 1.0  # PDFのページの大きさを実際の用紙の大きさに直す倍率
     # 画像のファイルの、横・縦の拡大の倍率（記録された解像度が縦横で違うとき、画素を正方形にする）。
     # 画像に保存された向き（EXIF の向きを直す前）の横・縦
@@ -161,27 +170,21 @@ def open_pages(path: Path) -> list[SourcePage]:
                     try:
                         pages.append(_pdf_page(path, pdf, i))
                     except Exception as e:
-                        # 開けてもページを読めない PDF。InputError にして、一緒に選んだほかのファイルは
+                        # 開けてもページの大きさを読めない PDF。InputError にして、一緒に選んだほかのファイルは
                         # 開けるようにする
-                        raise InputError(
-                            tr(
-                                "PDF の{page}ページ目を読めません: {name}",
-                                page=i + 1,
-                                name=path.name,
-                            )
-                        ) from e
+                        raise _page_error(path, i) from e
                 return pages
             finally:
                 pdf.close()
     # 複数ページとして扱うのは TIFF だけで、ほかの形式は1枚目だけを開く。形式は拡張子ではなく中身で
-    # 見分ける（Pillow は中身で形式を決める）。複数の画像を持つ JPEG（MPO 形式）は、2枚目以降に
+    # 見分ける（Pillow は中身で形式を決める。開く形式は filetypes.IMAGE_FORMATS に限る）。複数の画像を持つ JPEG（MPO 形式）は、2枚目以降に
     # 小さな補助の画像を持つことがあり、それをページにすると墨消しせずに出力してしまうため。
     # 解像度は画像ごとに求める（TIFF は大きさの違う画像を持つことがある）。
     # TIFF の縮小版（サムネイル）と透明のマスクは、ページにしない（ページにすると、どの様式にも類似しないページ
     # として、墨消しせずに出力してしまうため）。全部がそうなら1枚目だけをページにする
     pages = []
     try:
-        with Image.open(path) as im:
+        with Image.open(path, formats=filetypes.IMAGE_FORMATS) as im:
             frames = getattr(im, "n_frames", 1) if im.format == "TIFF" else 1
             for i in range(frames):
                 im.seek(i)
@@ -213,7 +216,7 @@ def _image_page(path: Path, index: int, im: Image.Image) -> SourcePage:
     """画像のファイルの1枚をページにする。解像度は画像ごとに求める
 
     記録された解像度が縦横で ASPECT_TOLERANCE を超えて違えば（ファクスの 204×98dpi など）、低いほうの向きを
-    拡大して画素を正方形にし、解像度は高いほうの値にする。
+    拡大して画素を正方形にし、解像度は高いほうの値にする。比が ASPECT_MAX を超える記録は使わない。
     """
     dpi_info = im.info.get("dpi") or (0, 0)
     x = float(dpi_info[0]) if len(dpi_info) > 0 and dpi_info[0] else 0.0
@@ -221,8 +224,11 @@ def _image_page(path: Path, index: int, im: Image.Image) -> SourcePage:
     w, h = im.size
     stretch = (1.0, 1.0)
     if x > 0 and y > 0 and abs(x / y - 1) > ASPECT_TOLERANCE:
-        stretch = (1.0, x / y) if x > y else (y / x, 1.0)
-        x = max(x, y)
+        if max(x, y) / min(x, y) <= ASPECT_MAX:
+            stretch = (1.0, x / y) if x > y else (y / x, 1.0)
+            x = max(x, y)
+        else:
+            x = 0.0
     long_px = max(w * stretch[0], h * stretch[1])
     return SourcePage(path, index, _physical_dpi(round(long_px), x), 1.0, stretch)
 
@@ -245,6 +251,7 @@ def render(
     （Pillow の draft。読んだ画像が、縮めた後の大きさより小さくならない範囲で）。元の解像度で読んで縮めたときと
     画素が少し違う（600dpi の A4 で、解析の結果の傾きが 0.001度、範囲の位置が最大0.5画素違った）。
     """
+    page = resolve(page)
     dpi = dpi or page.dpi
     shrink = dpi / page.dpi
     with pixels(page, gray, shrink) as (img, owned, full):
@@ -276,6 +283,7 @@ def pixels(
     持ってよくない画像（PDF のページと、メモリの中の画像）は、with の中だけで読み、書き換えない。PDF のページは、
     PDFium が描いた画像をコピーせずに渡し、with を出ると閉じる（コピーすると、描いた画像とコピーが同時にあるため）。
     """
+    page = resolve(page)
     if isinstance(page, MemoryPage):
         yield page.rgb, False, page.rgb.shape[:2]
     elif page.path.suffix.lower() == ".pdf":
@@ -294,14 +302,26 @@ def _image_pixels(
 ) -> tuple[np.ndarray, tuple[int, int]]:
     """画像のファイルの1枚を配列にする（EXIF の向きを直し、画素を正方形にする）。配列と、元の解像度の高さ・幅を返す。
     shrink が 1 より小さく JPEG なら、縮めながら読む"""
-    with Image.open(page.path) as im:
+    with Image.open(page.path, formats=filetypes.IMAGE_FORMATS) as im:
         im.seek(page.index)
         full = im.size
+        orientation = im.getexif().get(EXIF_ORIENTATION, 1)
+        height, width = _square_pixels_shape(full, page.stretch, orientation)
+        if full[0] * full[1] > MAX_PIXELS:
+            width, height = full
+        if width * height > MAX_PIXELS:
+            # 配列を取る前に止める（解析の依頼の失敗になり、そのページは「処理できません」になる）
+            raise InputError(
+                tr(
+                    "画像が大きすぎます（{width}×{height}画素）",
+                    width=width,
+                    height=height,
+                )
+            )
         if shrink < 1 and im.format == "JPEG":
             im.draft(
                 im.mode, (math.ceil(full[0] * shrink), math.ceil(full[1] * shrink))
             )
-        orientation = im.getexif().get(EXIF_ORIENTATION, 1)
         # 向きを直さない画像（ふつうのスキャンと写真）では、exif_transpose のコピーを作らない
         source = im if orientation in (0, 1) else ImageOps.exif_transpose(im)
         colorless = gray is not False and source.mode in GRAY_MODES
@@ -480,7 +500,7 @@ def render_pdf_page(
     path: Path, index: int, scale: float, gray: bool | None = False
 ) -> np.ndarray:
     """PDF のページを、1ポイントあたり scale 画素の RGB（gray なら グレー）の画像にする。gray が None なら、色のない
-    ページ（_colorless）はグレー、ほかは RGB
+    ページ（PageParts.colorless）はグレー、ほかは RGB
 
     /Rotate と、注釈・入力欄の見た目も描く。入力欄の値は、init_forms をしないと描かれない。
     """
@@ -497,12 +517,12 @@ def _pdf_bitmap(
     描いたら文書を閉じて PDF_LOCK を放す（with の中の処理のあいだ、ほかのスレッドの PDF の処理を止めないため）。
     描いた画像は文書と別に持たれていて、文書を閉じた後も読める。
     """
+    if gray is None:
+        gray = _pdf_parts(path, index, file_stamp(path)).colorless
     with PDF_LOCK, open_pdf(path) as pdf:
         pdf.init_forms()
-        page = pdf[index]
+        page = _load_page(path, pdf, index)
         try:
-            if gray is None:
-                gray = _colorless(page)
             fmt = pdfium_c.FPDFBitmap_Gray if gray else pdfium_c.FPDFBitmap_BGR
             bitmap = page.render(
                 scale=scale, force_bitmap_format=fmt, rev_byteorder=not gray
@@ -516,96 +536,118 @@ def _pdf_bitmap(
             bitmap.close()
 
 
-def _colorless(page: pdfium.PdfPage) -> bool:
-    """ページがグレーか白黒2値の画像だけでできているか（文字・図形・シェーディング・注釈がなく、画像の色空間が
-    DeviceGray か CalGray で、1画素が1ビットか8ビット）。そのページは、グレーで描いても、RGB で描いてからグレーに
-    したときと画素が同じ（PDF_LOCK を持って呼ぶ。page.raw は、page を持っているこの関数の中だけで使う）"""
-    if pdfium_c.FPDFPage_GetAnnotCount(page.raw) > 0:
-        return False
-    meta = pdfium_c.FPDF_IMAGEOBJ_METADATA()
+def _pdf_page(path: Path, pdf: pdfium.PdfDocument, index: int) -> SourcePage:
+    """PDF の1ページを、ページの中身を読まずに、大きさだけでページにする（解像度は None。resolve で決める）
+
+    開く処理は、画面のプロセスとコマンドラインのプロセスで動く。ページの中身を読むと（FPDF_LoadPage）、自分自身を描く
+    部品などを持つ細工した PDF で、PDFium が部品を展開し続けて異常終了し、プロセスごと終わるため。ページの中身を読む
+    のは、解析のプロセスだけにする（異常終了しても、そのページが処理できないページになるだけで済む）。
+    """
+    size = pdfium_c.FS_SIZEF()
+    if not pdfium_c.FPDF_GetPageSizeByIndexF(pdf.raw, index, ctypes.byref(size)):
+        raise ValueError(f"could not read the size of page {index + 1}")
+    return SourcePage(path, index, None, _pdf_zoom(size.width, size.height))
+
+
+def _page_error(path: Path, index: int) -> InputError:
+    """PDF の index のページを読めないときの InputError"""
+    return InputError(
+        tr("PDF の{page}ページ目を読めません: {name}", page=index + 1, name=path.name)
+    )
+
+
+def _load_page(path: Path, pdf: pdfium.PdfDocument, index: int) -> pdfium.PdfPage:
+    """PDF の index のページの中身を読む（解析のプロセスで呼ぶ）。読めなければ InputError（PDFium の英語の文を、
+    そのまま画面に出さないため）"""
+    try:
+        return pdf[index]
+    except pdfium.PdfiumError as e:
+        raise _page_error(path, index) from e
+
+
+def _pdf_zoom(width: float, height: float) -> float:
+    """PDF のページの大きさ（ポイント）を実際の用紙の大きさに直す倍率。大きさが実際の用紙と合わなければ A4 とみなす"""
+    page_long_in = max(width, height) / 72
+    if PLAUSIBLE_LONG_IN[0] <= page_long_in <= PLAUSIBLE_LONG_IN[1]:
+        return 1.0
+    return A4_LONG_IN / page_long_in
+
+
+def resolve(page):
+    """解像度の決まっていない PDF のページ（open_pages の結果）を、解像度を決めたページにする。決まっていればそのまま
+
+    ページの中身（貼られた画像）を読むので、解析のプロセスで呼ぶ（_pdf_page）。描く処理（render・pixels）が呼ぶ。
+    """
+    if not isinstance(page, SourcePage) or page.dpi is not None:
+        return page
+    dpi = _pdf_dpi(page.path, page.index, page.zoom, file_stamp(page.path))
+    return replace(page, dpi=dpi)
+
+
+def _pdf_dpi(path: Path, index: int, zoom: float, stamp: tuple[int, int]) -> float:
+    """PDF のページを描く解像度（resolve。stamp はファイルの大きさと更新日時で、変わったファイルを読み直すための鍵）"""
+    parts = _pdf_parts(path, index, stamp)
+    if not parts.px_per_in:
+        return float(WORK_DPI)
+    dpi = min(parts.px_per_in / zoom, PDF_MAX_DPI)
+    page_in2 = (parts.width / 72) * (parts.height / 72)
+    if parts.drawing or parts.area_in2 < PDF_PARTIAL * page_in2:
+        dpi = max(dpi, PDF_MIN_DPI)
+    return dpi
+
+
+@dataclass(frozen=True)
+class PageParts:
+    """PDF のページの部品をたどった結果（_page_parts）"""
+
+    width: float  # /Rotate を反映した大きさ（ポイント）
+    height: float
+    # 貼られた範囲が1平方インチを超える画像のうち、ページの1インチあたりの画素数が最も多いものの、その画素数と、貼られた
+    # 範囲の外接矩形の面積（平方インチ）。なければ 0
+    px_per_in: float
+    area_in2: float
+    drawing: bool  # 画像のほかに、文字・図形・シェーディングがある
+    # グレーか白黒2値の画像だけでできている（文字・図形・シェーディング・注釈がなく、画像の色空間が DeviceGray か
+    # CalGray で、1画素が1ビットか8ビット）。そのページは、グレーで描いても、RGB で描いてからグレーにしたときと画素が同じ
+    colorless: bool
+
+
+@lru_cache(maxsize=256)
+def _pdf_parts(path: Path, index: int, stamp: tuple[int, int]) -> PageParts:
+    """PDF の index のページの部品をたどった結果（_page_parts）。描く解像度（_pdf_dpi）と、グレーで描くか（_pdf_bitmap）の
+    両方に使うので、1回だけたどって覚える（stamp はファイルの大きさと更新日時で、変わったファイルを読み直すための鍵）。
+    ページの中身を読むので、解析のプロセスで呼ぶ"""
+    with PDF_LOCK, open_pdf(path) as pdf:
+        page = _load_page(path, pdf, index)
+        try:
+            return _page_parts(page)
+        finally:
+            page.close()
+
+
+def _page_parts(page: pdfium.PdfPage) -> PageParts:
+    """ページの部品（画像・文字・図形・シェーディング・Form XObject）を1回たどって、PageParts を求める（PDF_LOCK を持って
+    呼ぶ。page.raw は、page を持っているこの関数の中だけで使う）
+
+    部品は、ラッパーの Python のオブジェクトを作らずに C の関数でたどる（部品の多いページで開く時間を延ばさないため）。
+    Form XObject の中の部品の変換行列は Form XObject の中の座標で表されるので、Form XObject の変換行列を掛け合わせて
+    ページの座標に直す（直さないと、縮めて貼った Form XObject の中の画像の解像度を小さく見積もる）。画像の範囲は、
+    貼られた範囲の外接矩形の面積で測る（小さな画像（ロゴなど）は対象にしない）。インライン画像も対象にする。
+    変換行列を読めない部品は、解像度と「文字・図形がある」には数えない（その Form XObject の中も同じ）が、色のない
+    ページかは、その中まで調べる。
+    """
+    width, height = page.get_size()
     gray_spaces = (
         pdfium_c.FPDF_COLORSPACE_DEVICEGRAY,
         pdfium_c.FPDF_COLORSPACE_CALGRAY,
     )
-    found = False
-    stack = [(page.raw, False)]
-    while stack:
-        parent, is_form = stack.pop()
-        if is_form:
-            count = pdfium_c.FPDFFormObj_CountObjects(parent)
-            get = pdfium_c.FPDFFormObj_GetObject
-        else:
-            count = pdfium_c.FPDFPage_CountObjects(parent)
-            get = pdfium_c.FPDFPage_GetObject
-        for i in range(count):
-            obj = get(parent, i)
-            kind = pdfium_c.FPDFPageObj_GetType(obj)
-            if kind == pdfium_c.FPDF_PAGEOBJ_FORM:
-                stack.append((obj, True))
-                continue
-            if kind != pdfium_c.FPDF_PAGEOBJ_IMAGE:
-                return False
-            if not pdfium_c.FPDFImageObj_GetImageMetadata(
-                obj, page.raw, ctypes.byref(meta)
-            ):
-                return False
-            if meta.colorspace not in gray_spaces or meta.bits_per_pixel not in (1, 8):
-                return False
-            found = True
-    return found
-
-
-def _pdf_page(path: Path, pdf: pdfium.PdfDocument, index: int) -> SourcePage:
-    page = pdf[index]
-    try:
-        width, height = page.get_size()  # /Rotate を反映した大きさ（ポイント）
-        px_per_in, area_in2, drawing = _pdf_image_px_per_inch(page)
-    finally:
-        page.close()
-    page_long_in = max(width, height) / 72
-    if PLAUSIBLE_LONG_IN[0] <= page_long_in <= PLAUSIBLE_LONG_IN[1]:
-        zoom = 1.0
-    else:  # ページの大きさが実際の用紙と合わない → A4 とみなす
-        zoom = A4_LONG_IN / page_long_in
-    if not px_per_in:
-        return SourcePage(path, index, float(WORK_DPI), zoom)
-    dpi = min(px_per_in / zoom, PDF_MAX_DPI)
-    if drawing or area_in2 < PDF_PARTIAL * (width / 72) * (height / 72):
-        dpi = max(dpi, PDF_MIN_DPI)
-    return SourcePage(path, index, dpi, zoom)
-
-
-def _pdf_image_px_per_inch(page: pdfium.PdfPage) -> tuple[float, float, bool]:
-    """ページに貼られた画像のうち、貼られた範囲が1平方インチを超え、ページの1インチあたりの画素数が最も多いものの、
-    その画素数と外接矩形の面積（平方インチ）と、ページに画像のほかに文字か図形があるか。画像がなければ (0, 0, …)
-
-    画像の範囲は、貼られた範囲の外接矩形の面積で測る（小さな画像（ロゴなど）は対象にしない）。インライン画像と、
-    Form XObject の中の画像も対象にする。
-    """
+    colorless = pdfium_c.FPDFPage_GetAnnotCount(page.raw) == 0
+    found = False  # 色のないページかを決める画像があった
     best, best_area, drawing = 0.0, 0.0, False
-    for part in _page_images(page):
-        if part is None:  # 文字か図形
-            drawing = True
-            continue
-        px_w, px_h, area_in2 = part
-        if area_in2 > 1:
-            ppi = ((px_w * px_h) / area_in2) ** 0.5
-            if ppi > best:
-                best, best_area = ppi, area_in2
-    return best, best_area, drawing
-
-
-def _page_images(page: pdfium.PdfPage) -> Iterator[tuple[int, int, float] | None]:
-    """ページの画像の部品ごとに、幅・高さの画素数と、貼られた範囲（外接矩形）の面積（平方インチ）を返す。文字・図形・
-    シェーディングの部品には None を返す
-
-    部品は、ラッパーの Python のオブジェクトを作らずに C の関数でたどる（部品の多いページで開く時間を延ばさない
-    ため）。Form XObject の中の部品の変換行列は Form XObject の中の座標で表されるので、Form XObject の変換行列を
-    掛け合わせてページの座標に直す（直さないと、縮めて貼った Form XObject の中の画像の解像度を小さく見積もる）。
-    page.raw は、page を持っているこの関数の中だけで使う。
-    """
+    # （親, Form XObject か, ページの座標への変換行列。読めなければ None）
     stack = [(page.raw, False, (1.0, 0.0, 0.0, 1.0, 0.0, 0.0))]
     w, h, m = ctypes.c_uint(), ctypes.c_uint(), pdfium_c.FS_MATRIX()
+    meta = pdfium_c.FPDF_IMAGEOBJ_METADATA()
     while stack:
         parent, is_form, ctm = stack.pop()
         if is_form:
@@ -617,21 +659,38 @@ def _page_images(page: pdfium.PdfPage) -> Iterator[tuple[int, int, float] | None
         for i in range(count):
             obj = get(parent, i)
             kind = pdfium_c.FPDFPageObj_GetType(obj)
-            if kind in DRAWING_KINDS:
-                yield None
-                continue
             if kind not in (pdfium_c.FPDF_PAGEOBJ_IMAGE, pdfium_c.FPDF_PAGEOBJ_FORM):
+                colorless = False
+                if kind in DRAWING_KINDS and ctm is not None:
+                    drawing = True
                 continue
-            if not pdfium_c.FPDFPageObj_GetMatrix(obj, m):
-                continue
-            full = _mul((m.a, m.b, m.c, m.d, m.e, m.f), ctm)
+            full = None
+            if ctm is not None and pdfium_c.FPDFPageObj_GetMatrix(obj, m):
+                full = _mul((m.a, m.b, m.c, m.d, m.e, m.f), ctm)
             if kind == pdfium_c.FPDF_PAGEOBJ_FORM:
                 stack.append((obj, True, full))
-            elif pdfium_c.FPDFImageObj_GetImagePixelSize(obj, w, h):
+                continue
+            if colorless:
+                if (
+                    pdfium_c.FPDFImageObj_GetImageMetadata(
+                        obj, page.raw, ctypes.byref(meta)
+                    )
+                    and meta.colorspace in gray_spaces
+                    and meta.bits_per_pixel in (1, 8)
+                ):
+                    found = True
+                else:
+                    colorless = False
+            if full is not None and pdfium_c.FPDFImageObj_GetImagePixelSize(obj, w, h):
                 a, b, c, d = full[:4]  # 画像は1×1の正方形を変換行列で貼る
                 bw = abs(a) + abs(c)  # 外接矩形の幅・高さ（ポイント）
                 bh = abs(b) + abs(d)
-                yield w.value, h.value, (bw / 72) * (bh / 72)
+                area_in2 = (bw / 72) * (bh / 72)
+                if area_in2 > 1:
+                    ppi = ((w.value * h.value) / area_in2) ** 0.5
+                    if ppi > best:
+                        best, best_area = ppi, area_in2
+    return PageParts(width, height, best, best_area, drawing, colorless and found)
 
 
 def _mul(m: tuple, n: tuple) -> tuple:

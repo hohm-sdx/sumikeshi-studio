@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Hideki Ohmura
 # SPDX-License-Identifier: AGPL-3.0-only
-"""テストの検査用の PDF（tests/data/試験_*.pdf のうち5つ）を、PDF の構文を直接書いて作る
+"""テストの検査用の PDF（tests/data/試験_*.pdf のうち6つ）を、PDF の構文を直接書いて作る
 
 作るもの（どれも ICC プロファイルを入れない。画像の色空間は DeviceRGB）:
 - 試験_画像1枚.pdf：A4 のページに、1000×1400画素の JPEG を縦横の比を保って貼った PDF
@@ -9,9 +9,12 @@
 - 試験_相互参照ストリーム.pdf：試験_画像1枚.pdf と同じ中身を、オブジェクトストリームと相互参照ストリームで書いた PDF
 - 試験_文字のデータ9種類.pdf：小さな画像を貼ったページに、目印の文字列を、見えない文字・注釈・入力欄・文書の情報・
   XMP・しおり・添付ファイル・OpenAction（JavaScript）に入れた PDF
+- 試験_自分自身を描くページ.pdf：1ページ目は試験_画像1枚.pdf と同じページ、2ページ目は、自分自身を2回描く Form XObject
+  を貼ったページ（PDFium はこのページを読むと部品を展開し続け、メモリを取れなくなると異常終了する。読ませるのは、
+  メモリの上限を付けた別のプロセスだけにする）
 
 日時や識別子を書かないので、作るたびに同じバイト列になる（JPEG は uv.lock でバージョンを固定した OpenCV で作る）。
-tests/test_make_test_pdfs.py が、作り直したものとコミットされているものが同じことを確かめる。
+作り方を変えたら、このスクリプトで作り直してコミットする。
 試験_入力欄.pdf・試験_パスワード付き.pdf は、ここでは作らない（tests/data/README.md）。
 
 使い方（リポジトリの直下で）:
@@ -168,6 +171,30 @@ def form_xobject_objects() -> list[bytes]:
     ]
 
 
+def self_drawing_objects() -> list[bytes]:
+    """試験_自分自身を描くページ.pdf のオブジェクト：1ページ目（3）は画像のページ、2ページ目（6）は、線を1本引いてから
+    自分自身を2回描く Form XObject（8）を貼る"""
+    return [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /XObject << /Im0 4 0 R >> >> "
+            b"/Contents 5 0 R >>"
+        ),
+        image_xobject(jpeg(1000, 1400), 1000, 1400),
+        stream(b"", b"q\n" + fit(1000, 1400) + b"\n/Im0 Do\nQ\n"),
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /XObject << /F 8 0 R >> >> "
+            b"/Contents 7 0 R >>"
+        ),
+        stream(b"", b"/F Do\n"),
+        stream(
+            b"/Type /XObject /Subtype /Form /BBox [0 0 595 842] /Resources << /XObject << /F 8 0 R >> >>",
+            b"0 0 m 5 5 l S /F Do /F Do\n",
+        ),
+    ]
+
+
 def marked_objects() -> tuple[list[bytes], int]:
     """試験_文字のデータ9種類.pdf のオブジェクトと、文書の情報のオブジェクトの番号"""
     hidden = f"{MARK} 個人番号 123412341234"
@@ -269,6 +296,7 @@ def build() -> dict[str, bytes]:
         "試験_回転90.pdf": write_pdf(plain_objects(rotate=90), 1),
         "試験_相互参照ストリーム.pdf": write_pdf_with_xref_stream(plain_objects(), 1),
         "試験_文字のデータ9種類.pdf": write_pdf(marked, 1, info),
+        "試験_自分自身を描くページ.pdf": write_pdf(self_drawing_objects(), 1),
     }
 
 

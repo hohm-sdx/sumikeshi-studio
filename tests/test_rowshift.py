@@ -144,9 +144,19 @@ def test_shifted_names_join_field_note():
     """隣の行に置かれている見込みの高い欄は、ほかの欄の要確認と同じ1つの文に、枠の線を越えた記入の欄の次に挙げる。
     枠の線が見つからない欄や線が傾いた欄と重なる欄は、1回だけ挙げる"""
     fields = [forms.Field(n, 0, 0, 10, 10) for n in ("甲", "乙", "丙", "丁")]
-    assert forms._field_notes(fields, ["丙"], ["甲"], [], ["乙", "丙"], ["乙"]) == [
+    placed = forms._Placed(
+        fields,
+        unframed=["丙"],
+        crossed=["甲"],
+        frameless=[],
+        tilted=["乙", "丙"],
+        shifted=["乙"],
+        photo=False,
+    )
+    assert forms._field_notes(placed) == [
         "「甲」「乙」「丙」の欄の範囲が、欄に合っていないおそれがあります"
     ]
-    assert forms._field_notes(fields, ["丙"], [], [], [], ["乙", "丙"]) == [
+    placed = placed._replace(crossed=[], tilted=[], shifted=["乙", "丙"])
+    assert forms._field_notes(placed) == [
         "「乙」「丙」の欄の範囲が、欄に合っていないおそれがあります"
     ]

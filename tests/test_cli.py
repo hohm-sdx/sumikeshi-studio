@@ -83,9 +83,10 @@ def test_usage_errors(gui_env, out, tmp_path, monkeypatch, capsys):
         ),
     ]:
         assert run(capsys, *args) == (2, [], [reason, usage]), args
-    code, lines, _ = run(capsys, "--help")
-    assert code == 0 and lines[0].startswith(
-        "使い方：<入力のファイル・フォルダ> … --out <出力のフォルダ>"
+    code, lines, err = run(capsys, "--help")
+    assert code == 0 and err == []
+    assert lines[0].startswith(
+        "使い方：sumikeshi-cli.bat <入力のファイル・フォルダ> … --out <出力のフォルダ>"
     )
     assert lines[-1].startswith("終了の番号：0 すべてのファイルを出力した")
     # 言語の指定は、引数の誤りの文にも効く。知らない言語は、ほかの誤りより先に知らせない（画面と同じ言語で出す）
@@ -100,6 +101,27 @@ def test_usage_errors(gui_env, out, tmp_path, monkeypatch, capsys):
         capsys.readouterr().err.splitlines()[0]
         == "--language には ja か en を指定してください。"
     )
+
+
+def test_no_arguments_show_usage(gui_env, monkeypatch, capsys):
+    """引数なしで動かすと、--help と同じ使い方を標準エラー出力に出して、番号 2 で終える（入力の渡し忘れ）。
+    使い方の1行目は、配布用パッケージで動かす .bat の名前で始まる（開発の環境で python -m で動かしたときも同じ文）"""
+    monkeypatch.setenv(i18n.LANGUAGE_ENV, i18n.JA)
+    assert cli.run([]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.splitlines() == cli.HELP.splitlines()
+    monkeypatch.setenv(i18n.LANGUAGE_ENV, i18n.EN)
+    assert cli.run([]) == 2
+    err = capsys.readouterr().err.splitlines()
+    assert err[0].startswith(
+        "Usage: sumikeshi-cli.bat <input files or folders> ... --out <output folder>"
+    )
+    assert err[-1].startswith("Exit codes: 0 ")
+    # --help は、同じ文を標準出力に出して 0
+    assert cli.run(["--help"]) == 0
+    captured = capsys.readouterr()
+    assert (captured.out.splitlines(), captured.err) == (err, "")
 
 
 def test_exports_named_and_writes_work_log(
@@ -374,6 +396,53 @@ def test_failed_page_is_exported_without_redaction(
     assert row["Pages not analyzed"] == "2" and row["Pages"] == "2"
 
 
+def test_file_with_page_ending_analysis_process_is_not_exported(
+    gui_env, two_pages, forms, out, monkeypatch, capsys
+):
+    """解析のプロセスが途中で終了したページのあるファイルは、出力を試さずに、出力しなかったファイルにする（墨消しせずに
+    入れるためにページを描くと、また終了するため。番号 1）。処理できなかったページは「解析しました」と出さない"""
+    from concurrent.futures.process import BrokenProcessPool
+
+    def analyze(page, *args, **kwargs):
+        if page.index == 1:
+            raise BrokenProcessPool("解析のプロセスが終わった")
+        return cached_analyze(page, *args, **kwargs)
+
+    drawn = []
+    monkeypatch.setattr(pipeline, "analyze", analyze)
+    monkeypatch.setattr(export, "mask_page", drawn.append)
+    code, lines, _ = run(capsys, two_pages, "--out", out, "--forms", forms)
+    assert code == 1 and drawn == [] and list(out.iterdir()) == []
+    assert "　　1ページ目を解析しました（1／2）" in lines
+    assert "　　2ページ目は処理できません（2／2）" in lines
+    assert not any("2ページ目を解析しました" in line for line in lines)
+    assert (
+        f"　　✗ {two_pages.name}：出力しませんでした。2ページ目の解析で、解析のプロセスが途中で終了しました。"
+        in lines
+    )
+
+
+def test_file_with_page_ending_analysis_process_in_english(
+    gui_env, two_pages, forms, out, monkeypatch, capsys
+):
+    """解析のプロセスが途中で終了したページのあるファイルの英語の文は、ページの範囲を見出しの形で示す（ほかの、ページの
+    範囲を示す文と同じく、ページの数で単数と複数を分けない）"""
+    from concurrent.futures.process import BrokenProcessPool
+
+    def analyze(page, *args, **kwargs):
+        raise BrokenProcessPool("解析のプロセスが終わった")
+
+    monkeypatch.setattr(pipeline, "analyze", analyze)
+    code, lines, _ = run(
+        capsys, two_pages, "--out", out, "--forms", forms, language="en"
+    )
+    assert code == 1
+    assert (
+        f"    ✗ {two_pages.name}: Not exported. Pages on which the analysis process ended unexpectedly: 1–2."
+        in lines
+    )
+
+
 def test_page_that_cannot_be_rendered_stops_the_file(
     gui_env, files, forms, out, monkeypatch, capsys
 ):
@@ -386,6 +455,24 @@ def test_page_that_cannot_be_rendered_stops_the_file(
     code, lines, _ = run(capsys, files[0], "--out", out, "--forms", forms)
     assert code == 1 and list(out.iterdir()) == []
     assert f"　　✗ {files[0].name}：出力できませんでした。OSError: 読めない" in lines
+
+
+def test_unreadable_page_in_export_is_told_without_class_name(
+    gui_env, files, forms, out, monkeypatch, capsys
+):
+    """出力でページを描けない理由が、入力のファイルを読めない理由（imaging.InputError）なら、例外のクラスの名前を
+    付けずに文だけを出す"""
+
+    def unreadable(job):
+        raise imaging.InputError("PDF の1ページ目を読めません: scan.pdf")
+
+    monkeypatch.setattr(export, "mask_page", unreadable)
+    code, lines, _ = run(capsys, files[0], "--out", out, "--forms", forms)
+    assert code == 1
+    assert (
+        f"　　✗ {files[0].name}：出力できませんでした。PDF の1ページ目を読めません: scan.pdf"
+        in lines
+    )
 
 
 def test_results_keep_no_work_image(
@@ -512,7 +599,7 @@ def test_command_line_in_its_own_process(scan, tmp_path):
 
 
 def test_module_entry_point_reports_not_exported(scan, tmp_path):
-    """python -m sumikeshi_studio.cli で起動できる（配布用パッケージの sumikeshi.bat と同じ呼び方）。出力先に同じ名前の
+    """python -m sumikeshi_studio.cli で起動できる（配布用パッケージの sumikeshi-cli.bat と同じ呼び方）。出力先に同じ名前の
     ファイルがあるファイルだけなら、解析せずに何も出力しないで、番号 1 で終える"""
     forms = tmp_path / "forms"
     install_bundled(forms)
@@ -535,3 +622,53 @@ def test_module_entry_point_reports_not_exported(scan, tmp_path):
     assert done.returncode == cli.EXIT_NOT_EXPORTED == 1, done.stdout + done.stderr
     assert existing.read_bytes() == b"old"
     assert "出力先に同じ名前のファイルがあります" in done.stdout
+
+
+SELF_DRAWING = Path(__file__).parent / "data" / "試験_自分自身を描くページ.pdf"
+# 自分自身を描くページを PDFium が読むと、メモリを取れなくなるまで部品を展開するので、別のプロセスのデータの領域の
+# 上限（RLIMIT_DATA。spawn で起動する解析のプロセスにも引き継がれる）で、取れなくなるまでの量を限る。ツールと解析の
+# プロセスがふつうの PDF を処理できる大きさ（論理 CPU 8 の環境で、架空の記入の4ページの PDF を処理したときの VmData の
+# 最大は、コマンドラインのプロセスが1,364MB、解析のプロセスが1,916MB）。データの領域はスレッドのスタックも数え、
+# スレッドの数は論理 CPU の数で増える（OCR・OpenCV・NumPy）ので、8 を超える CPU 1つにつき 32MB を足す（OCR のスレッドの
+# 数だけを CPU 32・64 にしたことにして測ると、解析のプロセスのスレッドは32 → 68・116、VmData は1,915 → 2,141・2,526MB で、
+# スレッド1つにつき約7MB）。アドレス空間の上限（RLIMIT_AS）は、予約しただけの領域も数え、ふつうのページでも 3GB を超えて
+# 失敗するため使わない
+DATA_LIMIT = 3 * 1024**3 + 32 * 1024**2 * max(0, (os.cpu_count() or 8) - 8)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="RLIMIT_DATA で限れる Linux で確かめる"
+)
+def test_self_drawing_page_fails_only_that_page(forms, out, tmp_path):
+    """自分自身を描くページのある PDF を開いても、コマンドラインのプロセスは異常終了しない（開く処理はページの中身を
+    読まない）。そのページ（2ページ目）を読む解析のプロセスだけが異常終了し、そのページは処理できないページになる。
+    1ページ目は解析できる。そのファイルは、出力を試さずに出力しなかったファイルになる（墨消しせずに入れるためにページを
+    描くと、また異常終了するため）"""
+    import resource
+
+    def limit():
+        resource.setrlimit(resource.RLIMIT_DATA, (DATA_LIMIT, DATA_LIMIT))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+    env = os.environ | {
+        "LOCALAPPDATA": str(tmp_path / "appdata"),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "SUMIKESHI_STUDIO_ANALYSIS_PROCESSES": "1",
+    }
+    done = subprocess.run(
+        [sys.executable, "-I", "-m", "sumikeshi_studio.cli", str(SELF_DRAWING), "--out",
+         str(out), "--forms", str(forms), "--language", "ja"],
+        capture_output=True, text=True, encoding="utf-8", env=env, timeout=600,
+        check=False, preexec_fn=limit,
+    )  # fmt: skip
+    text = done.stdout + done.stderr
+    assert done.returncode == cli.EXIT_NOT_EXPORTED, text  # シグナルで終わっていない
+    lines = done.stdout.splitlines()
+    assert "（2ページ）" in text, text
+    assert "　　1ページ目を解析しました（1／2）" in lines, text
+    assert "　　2ページ目は処理できません（2／2）" in lines, text
+    assert (
+        f"　　✗ {SELF_DRAWING.name}：出力しませんでした。2ページ目の解析で、解析のプロセスが途中で終了しました。"
+        in lines
+    ), text
+    assert list(out.iterdir()) == []

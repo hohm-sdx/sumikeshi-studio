@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Hideki Ohmura
 # SPDX-License-Identifier: AGPL-3.0-only
-"""導入（setup.bat が動かす install.ps1）が出す文の言語のテスト
+"""導入（install.bat が動かす install.ps1）が出す文の言語のテスト
 
 Windows PowerShell 5.1 はこの環境で動かせないので、スクリプトの文を読んで確かめる。動き（Windows の PowerShell で日本語・英語が
 出ること、設定のファイルの言語を読むこと）は、配布用パッケージで、Windows の PC で確かめる。

@@ -64,6 +64,18 @@ function Test-SamePathQuietly([string]$A, [string]$B) {
     try { return Test-SamePath $A $B } catch { return $false }
 }
 
+# 起動の画面で選んだ様式のフォルダ（Read-FormsFolder の値。選んでいなければ ""、読めなければ $null）の場所の種類。DefaultForms は既定の場所。
+# データを削除するかを尋ねる前に出す文と、問いの文を選ぶ。"default"：選んでいないか既定の場所、"inside"：データか設定の
+# フォルダ（またはその中）で、データと一緒に削除される、"outside"：その外で、削除しない、"unknown"：読めない
+function Get-FormsPlace($Forms, [string]$DefaultForms, [string]$Data, [string]$Settings) {
+    if ($null -eq $Forms) { return "unknown" }
+    if (-not $Forms -or (Test-SamePathQuietly $Forms $DefaultForms)) { return "default" }
+    foreach ($Folder in @($Data, $Settings)) {
+        try { if ((Test-SamePath $Forms $Folder) -or (Test-Under $Forms $Folder)) { return "inside" } } catch { }
+    }
+    return "outside"
+}
+
 function Test-Elevated {
     $Principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     return $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -201,15 +213,19 @@ function Invoke-Main {
     $Settings = Join-Path $env:APPDATA "SumikeshiStudio"
     $RemoveData = $false
     if ((Test-Path -LiteralPath $Data) -or (Test-Path -LiteralPath $Settings)) {
-        # 起動の画面で既定の場所と違う様式のフォルダを選んでいれば、その場所を示す（消さないことを伝えるため）
+        # 起動の画面で既定の場所と違う様式のフォルダを選んでいれば、削除するかどうかを示す。データか設定のフォルダの中に
+        # あれば、データと一緒に削除されるので、問いの文に入れる
         $Forms = Read-FormsFolder (Join-Path $Settings "SumikeshiStudio.ini")
         $DefaultForms = Join-Path $Data "forms"
-        if ($null -eq $Forms) {
-            Write-Host (Msg "起動の画面で既定の場所と違う様式のフォルダを選んでいたときは、そのフォルダは削除しません。" "If you selected a forms folder other than the default location on the start screen, that folder is not deleted.")
-        } elseif ($Forms -and -not (Test-SamePathQuietly $Forms $DefaultForms)) {
+        $Place = Get-FormsPlace $Forms $DefaultForms $Data $Settings
+        if ($Place -eq "unknown") {
+            Write-Host ((Msg "起動の画面で選んだ様式のフォルダは、{0} か {1} の中にあれば削除し、ほかの場所にあれば削除しません。" "The forms folder selected on the start screen is deleted if it is in {0} or {1}, and is not deleted if it is elsewhere.") -f $Data, $Settings)
+        } elseif ($Place -eq "outside") {
             Write-Host ((Msg "様式のフォルダ（{0}）は、既定の場所でないので削除しません。" "The forms folder ({0}) is not the default location, so it is not deleted.") -f $Forms)
         }
-        if ($DeleteData) { $RemoveData = $DeleteData -eq "y" } else {
+        if ($DeleteData) { $RemoveData = $DeleteData -eq "y" } elseif ($Place -eq "inside") {
+            $RemoveData = Read-Yes ((Msg "このアカウントの作業ログ・設定・様式（{0}、{1}。起動の画面で選んだ様式のフォルダ {2} を含む）も削除しますか？ 削除するときは Y を入力して Enter を押してください（何も入力せずに Enter を押すと残します）。[y/N]" "Also delete the work log, settings, and forms for this account ({0}, {1}, including the forms folder selected on the start screen, {2})? To delete them, type Y and press Enter (pressing Enter alone keeps them). [y/N]") -f $Data, $Settings, $Forms)
+        } else {
             $RemoveData = Read-Yes ((Msg "このアカウントの作業ログ・設定・既定の場所の様式（{0}、{1}）も削除しますか？ 削除するときは Y を入力して Enter を押してください（何も入力せずに Enter を押すと残します）。[y/N]" "Also delete the work log, settings, and forms in the default location for this account ({0}, {1})? To delete them, type Y and press Enter (pressing Enter alone keeps them). [y/N]") -f $Data, $Settings)
         }
     }
@@ -219,7 +235,7 @@ function Invoke-Main {
         $Arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"", "-Elevated", "-Language", $Lang)
         if ($NoWait) { $Arguments += "-NoWait" }
         try {
-            $Process = Start-Process -FilePath "powershell.exe" -ArgumentList $Arguments -Verb RunAs -Wait -PassThru
+            $Process = Start-Process -FilePath (Join-Path $PSHOME "powershell.exe") -ArgumentList $Arguments -Verb RunAs -Wait -PassThru
         } catch {
             Write-Host (Msg "管理者権限での実行が取り消されたため、アンインストールしませんでした。" "Nothing was uninstalled because running with administrator rights was canceled.")
             return

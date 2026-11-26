@@ -102,9 +102,11 @@ def test_abort_leaves_python_stack(tmp_path):
 
 def test_qt_messages_are_recorded(tmp_path):
     """Qt の警告と、致命的なエラー（この後 Qt が abort する）の理由を書く。動いているスレッド（QThread）を
-    手放すと、Qt は致命的なエラーにして abort する"""
+    手放すと、Qt は致命的なエラーにして abort する。スレッドが run に入ったのを待ってから手放す（run に入る前に手放すと、
+    スレッドの出力に「in run」が出ない）"""
     out = run(
         """
+        import threading
         import time
         from PySide6.QtCore import QCoreApplication, QThread, qWarning
         crashlog.setup(crashlog.ROLE_SCREEN)
@@ -112,13 +114,16 @@ def test_qt_messages_are_recorded(tmp_path):
         qWarning("試験用の警告")
         app = QCoreApplication([])
 
+        started = threading.Event()
+
         class Sleeper(QThread):
             def run(self):
+                started.set()
                 time.sleep(5)
 
         t = Sleeper()
         t.start()
-        time.sleep(0.3)
+        assert started.wait(30)
         del t
         """,
         tmp_path,

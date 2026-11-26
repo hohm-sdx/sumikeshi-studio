@@ -136,14 +136,20 @@ class BoxItem(QGraphicsPolygonItem):
         views = self.scene().views()
         scale = views[0].transform().m11() if views else 1.0
         corner = self.corner_at(event.pos(), scale)
-        if corner is not None and len(self.polygon()) != 4:
+        if corner is None:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        elif views and views[0].move_corners:
+            # その角だけを動かすときは十字の矢印、Shift で長方形として大きさを変えるときは斜めの矢印
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.setCursor(_diagonal(self.polygon(), corner))
+            else:
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif len(self.polygon()) != 4:
             self.setCursor(Qt.CursorShape.SizeAllCursor)
         elif corner in (0, 2):
             self.setCursor(Qt.CursorShape.SizeFDiagCursor)
-        elif corner in (1, 3):
-            self.setCursor(Qt.CursorShape.SizeBDiagCursor)
         else:
-            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.setCursor(Qt.CursorShape.SizeBDiagCursor)
 
 
 class PageView(QGraphicsView):
@@ -170,6 +176,10 @@ class PageView(QGraphicsView):
         self.edit_mode = False
         # 範囲の操作を受け付けない（範囲を描く画面で、保存を待つあいだ）
         self.locked = False
+        # 角のドラッグの動き。True（墨消しの画面）：どの範囲も、つかんだ角だけを動かす（長方形の範囲は角のある範囲に
+        # なる）。押したときに Shift を押していれば、どの範囲も、向かいの角を止めた長方形として大きさを変える。
+        # False（範囲を描く画面）：長方形の範囲は向かいの角を止めて大きさを変え、角のある範囲はつかんだ角だけを動かす
+        self.move_corners = False
         # 右のボタンのドラッグでスクロールする：押した位置（画面の上）とスクロールバーの値。動かしたか（panned）。
         # panned は、ボタンを離した後に届く右クリックの合図（Windows では離したときに届く）まで持ち、メニューを
         # 出さないために使う
@@ -278,18 +288,27 @@ class PageView(QGraphicsView):
         item = self._item_at(p)
         if item is not None:
             self.item = item
-            # 押したときの形（長方形の範囲は長方形、長方形でない範囲は角の並び）
-            self.orig = (
-                QRectF(item.rect())
-                if item.box.corners is None
-                else QPolygonF(item.polygon())
-            )
+            # 押したときの範囲の形（元に戻す操作の前の形）と、表示の形（離したときに戻す形）
+            self.old = item.box.geometry()
+            self.orig = QPolygonF(item.polygon())
+            self.dragged = False
             self.corner = item.corner_at(p, self._scale())
+            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             if self.corner is None:
                 self.mode = "press"
+            elif self.move_corners:
+                self.mode = "resize" if shift else "corner"
             else:
-                # 長方形の範囲は、向かいの角を止めて大きさを変え、長方形でない範囲は、つかんだ角だけを動かす
                 self.mode = "resize" if item.box.corners is None else "corner"
+            if self.mode == "resize":
+                # 止める角：つかんだ角から最も遠い角（長方形の範囲は向かいの角）
+                grabbed = self.orig[self.corner]
+                self.fixed = max(
+                    self.orig,
+                    key=lambda q: (
+                        (q.x() - grabbed.x()) ** 2 + (q.y() - grabbed.y()) ** 2
+                    ),
+                )
         elif self.image_rect.contains(p):
             self.mode = "draw"
             pen = QPen(COLOR_MANUAL, 2, Qt.PenStyle.DashLine)
@@ -316,22 +335,15 @@ class PageView(QGraphicsView):
             and (p - self.start).manhattanLength() > DRAG_DISTANCE / self._scale()
         ):
             self.mode = "move"
-        if self.mode == "move" and isinstance(self.orig, QPolygonF):
+        if self.mode == "move":
             self.item.setPolygon(self.orig.translated(p - self.start))
-        elif self.mode == "move":
-            r = QRectF(self.orig)
-            r.translate(p - self.start)
-            self.item.setRect(r)
         elif self.mode == "corner":
             points = list(self.orig)
             points[self.corner] = p
             self.item.setPolygon(QPolygonF(points))
         elif self.mode == "resize":
-            r = self.orig
-            fixed = [r.bottomRight(), r.bottomLeft(), r.topLeft(), r.topRight()][
-                self.corner
-            ]
-            self.item.setRect(QRectF(fixed, p).normalized())
+            self.dragged = True
+            self.item.setRect(QRectF(self.fixed, p).normalized())
         elif self.mode == "draw":
             self.temp.setRect(
                 QRectF(self.start, p).normalized().intersected(self.image_rect)
@@ -370,25 +382,36 @@ class PageView(QGraphicsView):
         mode, self.mode = self.mode, None
         if mode == "press":
             self.toggled.emit(self.item.box)
-        elif mode in ("move", "corner") and isinstance(self.orig, QPolygonF):
+        elif mode == "corner" or (mode == "move" and self.item.box.corners is not None):
             # 辺が交わる形（角を向かいの辺の外まで動かしたとき）と、小さすぎる形は、動かす前に戻す（長方形の範囲の
-            # MIN_BOX と同じく、何もしない）
+            # MIN_BOX と同じく、何もしない）。長方形の範囲の角を動かすと、角のある範囲になる
             moved = _points(self.item.polygon())
             new = (
                 _clipped(self.item.polygon(), self.image_rect) if _simple(moved) else ()
             )
             self.item.setPolygon(self.orig)
-            old = _points(self.orig)
             r = boxes.bounds(new) if len(new) >= 3 else (0, 0, 0, 0)
-            if r[2] >= MIN_BOX and r[3] >= MIN_BOX and _simple(new) and new != old:
+            if (
+                r[2] >= MIN_BOX
+                and r[3] >= MIN_BOX
+                and _simple(new)
+                and new != _points(self.orig)
+            ):
                 signal = self.moved if mode == "move" else self.resized
-                signal.emit(self.item.box, old, new)
+                signal.emit(self.item.box, self.old, new)
         elif mode in ("move", "resize"):
-            new = self.item.rect().intersected(self.image_rect)
-            self.item.setRect(self.orig)
-            if new.width() >= MIN_BOX and new.height() >= MIN_BOX and new != self.orig:
+            # 長方形にする（角のある範囲の Shift での大きさの変更は、長方形に戻す）。角を押しただけで動かさなかった
+            # ときは、角のある範囲を長方形にしない
+            new = _tuple(self.item.rect().intersected(self.image_rect))
+            self.item.setPolygon(self.orig)
+            if (
+                new[2] >= MIN_BOX
+                and new[3] >= MIN_BOX
+                and new != self.old
+                and (mode == "move" or self.dragged)
+            ):
                 signal = self.moved if mode == "move" else self.resized
-                signal.emit(self.item.box, _tuple(self.orig), _tuple(new))
+                signal.emit(self.item.box, self.old, new)
         elif mode == "draw":
             r = self.temp.rect()
             self.scene().removeItem(self.temp)
@@ -443,6 +466,14 @@ class PageView(QGraphicsView):
 
 def _tuple(r: QRectF) -> tuple[float, float, float, float]:
     return (r.x(), r.y(), r.width(), r.height())
+
+
+def _diagonal(polygon: QPolygonF, corner: int) -> Qt.CursorShape:
+    """角 corner で長方形として大きさを変えるときの斜めの矢印（左上・右下の角は ↖↘、右上・左下の角は ↗↙）"""
+    p, c = polygon[corner], polygon.boundingRect().center()
+    if (p.x() - c.x()) * (p.y() - c.y()) > 0:
+        return Qt.CursorShape.SizeFDiagCursor
+    return Qt.CursorShape.SizeBDiagCursor
 
 
 def _points(poly: QPolygonF) -> tuple[boxes.Point, ...]:

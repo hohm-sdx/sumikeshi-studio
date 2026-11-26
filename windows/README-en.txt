@@ -7,7 +7,7 @@ A Japanese version of this document is in README-ja.txt.
 == Setup
 1. If you downloaded the ZIP from the Internet (for example, from the Releases page of the public repository), unblock
    it as follows before extracting it. Windows marks a ZIP downloaded from the Internet as coming from the Internet. If
-   you extract the ZIP with this mark, Smart App Control may block the setup (setup.bat).
+   you extract the ZIP with this mark, Smart App Control may block the setup (install.bat).
    (1) Right-click the downloaded ZIP and open "Properties".
    (2) On the "General" tab, select the "Unblock" check box near the bottom.
    (3) Click "OK".
@@ -15,10 +15,13 @@ A Japanese version of this document is in README-ja.txt.
      a USB drive). In that case, this step is not needed.
 2. Extract all files from the ZIP. You can extract it anywhere, such as the Downloads folder.
    - The tool does not run directly from inside the ZIP. Be sure to extract it.
+   - Use the extracted folder (sumikeshi-studio) without moving its contents or adding other files to it. Setup
+     cannot be run if its contents are moved to the root of a drive or other files are added to it.
    - On Windows, extraction may fail if a path (the folder and file names joined together) exceeds 260 characters.
      The longest path in this ZIP is 136 characters. Keep the path of the destination folder to 121 characters or less.
-3. Double-click setup.bat in the extracted folder (sumikeshi-studio). It asks for the type of installation; type 1 or 2
-   and press Enter (Enter alone chooses 1).
+3. Double-click install.bat in the extracted folder (sumikeshi-studio). It asks for the type of installation; type 1 or 2
+   and press Enter (Enter alone chooses 1). If an earlier installation is found, it does not ask, and updates the tool
+   with the same type (see "Updating to a new version").
    - 1 (Just for me): Administrator rights are not required. The extracted folder is moved to
      %LOCALAPPDATA%\Programs\SumikeshiStudio.
    - 2 (All users of this PC): Administrator rights are required. The files are copied to
@@ -26,19 +29,21 @@ A Japanese version of this document is in README-ja.txt.
      network folder cannot be done.
    After tens of seconds, "Sumikeshi Studio" appears on the Start menu and the desktop ("墨消しスタジオ" on Japanese
    Windows), and the tool is added to "Installed apps" in Windows. When "Press Enter to close." appears, press Enter.
-   setup.bat shows its messages in the language selected on the start screen of the tool (if none is selected, in the
+   install.bat shows its messages in the language selected on the start screen of the tool (if none is selected, in the
    Windows display language).
 4. If the forms folder has no forms, you are asked whether to add the sample National Tax Agency forms (扶養控除等申告書,
    保険料控除申告書, and 基・配・特・所の申告書). Type Y to add them or N not to add them, and then press Enter (Enter
    alone adds them). In an installation for all users, the tool asks each user the first time the user starts it.
 If you used version 0.2.0 or earlier, you can delete the folder where you extracted that version after the
-installation (setup.bat shows the location of that folder at the end of its window). The forms, the work log, and the
+installation (install.bat shows the location of that folder at the end of its window). The forms, the work log, and the
 settings are kept as they are.
 
 == Starting the tool
 Choose "Sumikeshi Studio" on the Start menu or the desktop.
 If there is no shortcut, you can also start the tool by double-clicking start.bat in the installed folder (just for me:
 %LOCALAPPDATA%\Programs\SumikeshiStudio; all users: C:\Program Files\SumikeshiStudio).
+To open files, drag them onto the shortcut or the start screen. Do not drag files onto .bat files (with a file whose
+name contains &, the part after it may be run as a separate command).
 If the tool is already running, it does not start again; the window that is shown comes to the front.
 
 == Display language
@@ -130,10 +135,10 @@ listed in "Source of the forms". The current areas are moved onto the new sheet;
 If the forms folder is a shared folder, doing this on one PC makes the form available on all PCs.
 
 == Exporting from the command line (without the screen)
-With sumikeshi.bat in the Command Prompt or another console, you can analyze files and export redacted PDFs without
+With sumikeshi-cli.bat in the Command Prompt or another console, you can analyze files and export redacted PDFs without
 the screen.
-Example (just-for-me installation): %LOCALAPPDATA%\Programs\SumikeshiStudio\sumikeshi.bat C:\scan --out C:\out
-In an installation for all users, use "C:\Program Files\SumikeshiStudio\sumikeshi.bat" (enclose it in quotes because
+Example (just-for-me installation): %LOCALAPPDATA%\Programs\SumikeshiStudio\sumikeshi-cli.bat C:\scan --out C:\out
+In an installation for all users, use "C:\Program Files\SumikeshiStudio\sumikeshi-cli.bat" (enclose it in quotes because
 the path contains a space).
 - Specify one or more PDF or image files, or folders (the PDF and image files directly in them), as input.
 - Specify an existing output folder with --out. If a file with the same name already exists in the output folder, that
@@ -146,12 +151,13 @@ the path contains a space).
   Check those pages after the export. Pages that could not be analyzed (✕ Failed) are exported without redaction.
 - The exit code (%ERRORLEVEL%) is 0 if all files were exported, 1 if some files were not exported, 2 if processing
   could not start, and 3 if you stopped it partway with Ctrl+C.
-- For the list of options, run sumikeshi.bat --help.
+- For the list of options, run sumikeshi-cli.bat --help.
 - When calling from another program or script, pass folders instead of individual file names, or call
   python\python.exe in the installed folder directly with -I -X utf8 -m sumikeshi_studio.cli.
   Example: %LOCALAPPDATA%\Programs\SumikeshiStudio\python\python.exe -I -X utf8 -m sumikeshi_studio.cli C:\scan --out C:\out
-  Arguments passed to sumikeshi.bat are read by the Command Prompt (cmd.exe), so if a file name containing & or a
-  similar character is passed without quotes, the part after it may be run as a separate command.
+  Arguments passed to sumikeshi-cli.bat are read by the Command Prompt (cmd.exe), so if a file name containing & or a
+  similar character is passed without quotes, the part after it may be run as a separate command. The same applies
+  when files are dragged onto sumikeshi-cli.bat.
 
 == Updating to a new version
 The latest package is on the Releases page of the public repository
@@ -159,8 +165,10 @@ The latest package is on the Releases page of the public repository
 1. Close the tool. In an installation for all users, ask the other users of this PC to close it too (if a user left it
    running while signed in, the update is stopped).
 2. If you downloaded the new ZIP from the Internet, unblock it before extracting it (step 1 of "Setup").
-3. Extract the new ZIP, double-click setup.bat in that folder, and choose the same type of installation as before. The
-   earlier version is replaced with the new version. The forms, the work log, and the settings are kept.
+3. Extract the new ZIP, and double-click install.bat in that folder. It does not ask for the type of installation, and
+   updates the tool with the same type as before (when updating from version 0.2.0 or earlier, it asks for the type; see
+   step 3 of "Setup"). The earlier version is replaced with the new version. The forms, the work log, and the settings
+   are kept. To change the type of installation, uninstall the tool first (see "Uninstalling"), and then install it.
 
 == Uninstalling
 1. Close the tool.
@@ -171,7 +179,8 @@ The latest package is on the Releases page of the public repository
    "Installed apps" are deleted. Uninstalling an installation for all users requires administrator rights.
 4. You are asked whether to also delete the work log, the settings, and the forms in the default location of this
    account. Press Enter without typing anything to keep them. A forms folder selected on the start screen that is not
-   the default location (such as a shared folder) is not deleted.
+   the default location (such as a shared folder) is not deleted. However, if that folder is inside the folders of
+   the work log and settings (%LOCALAPPDATA%\SumikeshiStudio, %APPDATA%\SumikeshiStudio), it is deleted with them.
 The work logs, settings, and forms of other users are not deleted. If they are not needed, an administrator deletes
 C:\Users\(user name)\AppData\Local\SumikeshiStudio and C:\Users\(user name)\AppData\Roaming\SumikeshiStudio of each user.
 
@@ -181,19 +190,18 @@ same forms with several users, prepare a folder that everyone can read and write
 shared folder), and have each user select it with "Change" next to "Folder" on the start screen.
 
 == When Windows blocks the tool
-If a message saying that Smart App Control blocked a file that may be unsafe appears when you double-click setup.bat or
+If a message saying that Smart App Control blocked a file that may be unsafe appears when you double-click install.bat or
 another file, the ZIP may have been extracted without being unblocked. Do the following.
 1. Delete the extracted folder.
 2. Unblock the ZIP (step 1 of "Setup").
-3. Extract the ZIP again, and then double-click setup.bat.
+3. Extract the ZIP again, and then double-click install.bat.
 In addition, Windows Smart App Control (or your organization's application control) may block components of the tool.
-When they are blocked, setup.bat or the start screen of the tool shows a message such as
+When they are blocked, install.bat or the start screen of the tool shows a message such as
 "Windows Smart App Control (or your organization's application control) blocked ...".
 Taking a screenshot of that window may help investigate the cause. If the message appears on the start screen of the
-tool, extract the ZIP of the package and run setup.bat to see the names of the blocked components (if you are asked
-for the type of installation, close the window without typing anything).
-If the message says "blocked the following components that the tool does not use. This does not affect how the tool
-works.", you can keep using the tool.
+tool, extract the ZIP of the package and run install.bat to see the names of the blocked components.
+If the message says "... These components are not used for analysis or export, so the tool is expected to work
+normally.", you can keep using the tool.
 
 == Work log
 A record for each exported file is in %LOCALAPPDATA%\SumikeshiStudio\worklog.csv.
@@ -207,6 +215,19 @@ English). Images before redaction are not included, but the locations (paths) of
 (the same as the work log).
 If the window suddenly disappeared last time, the tool also tells you the location of this file the next time it starts.
 
+== Events recorded in Windows diagnostic data
+The component used to read text (onnxruntime) records usage events on Windows. Sumikeshi Studio stops this recording
+right after loading the component and each time it reads text. Before it is stopped, however, the following three pieces
+of information are recorded:
+- The version of the component
+- The CPU name, the number of logical processors, and the total memory
+- Whether a debugger is attached, the name of the processing component, and whether its setup succeeded
+These events do not contain PDFs or images, the text read from them, file names, folder locations, or the Windows user
+name (checked by recording the events on a test PC with Sumikeshi Studio 0.4.0rc2, which uses onnxruntime 1.31.0).
+These events may be sent to Microsoft as Windows diagnostic data. Whether they are sent depends on "Settings" >
+"Privacy & security" > "Diagnostics & feedback" in Windows and on Microsoft's settings. Sumikeshi Studio itself does not
+send them.
+
 == Source of the forms
 The sample images of the three sample forms included in this package (扶養控除等申告書, 保険料控除申告書, and
 基・配・特・所の申告書) were created by Hideki Ohmura by processing the following forms on the National Tax Agency
@@ -219,18 +240,18 @@ https://www.nta.go.jp/taxes/tetsuzuki/shinsei/annai/gensen/pdf/2026bun_04.pdf
 https://www.nta.go.jp/taxes/tetsuzuki/shinsei/annai/gensen/pdf/2026bun_06.pdf
 
 == Contents of this folder
-python\        Python 3.14, the tool itself (Lib\site-packages\sumikeshi_studio), and the libraries
-setup.bat      Asks for the type of installation, puts the tool in the fixed location, and adds it to "Installed
-               apps" and the shortcuts (see "Setup"; also used for updating to a new version)
-uninstall.bat  Uninstalls the tool (see "Uninstalling")
-start.bat      Starts the tool
-sumikeshi.bat  Exports from the command line without the screen (see "Exporting from the command line")
-scripts\       PowerShell scripts that setup.bat and the other .bat files run (do not run them directly)
-README-ja.txt  The Japanese version of this document
-README-en.txt  This document
-version.txt    Records of this package, such as the version, build time, public source location (Source),
-               and the versions of Python and PDFium
-licenses\      The full texts of the licenses, and the list of the licenses of the components (index.txt)
+python\            Python 3.14, the tool itself (Lib\site-packages\sumikeshi_studio), and the libraries
+install.bat        Installs and updates the tool: puts it in the fixed location, and adds it to "Installed apps"
+                   and the shortcuts (see "Setup" and "Updating to a new version")
+uninstall.bat      Uninstalls the tool (see "Uninstalling")
+start.bat          Starts the tool
+sumikeshi-cli.bat  Exports from the command line without the screen (see "Exporting from the command line")
+scripts\           PowerShell scripts that install.bat and the other .bat files run (do not run them directly)
+README-ja.txt      The Japanese version of this document
+README-en.txt      This document
+version.txt        Records of this package, such as the version, build date, public source location (Source),
+                   and the versions of Python and PDFium
+licenses\          The full texts of the licenses, and the list of the licenses of the components (index.txt)
 The list of Python and the libraries, with their versions, licenses, and the locations of the full texts, is in
 licenses\index.txt.
 Copyright (C) 2026 Hideki Ohmura

@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import analysis, formsave, formstext, formstore, uitext, widgets
+from . import analysis, formsave, formstext, formstore, review, uitext, widgets
 from .boxes import Box, Source
 from .commands import AddCommand, DeleteCommand, GeometryCommand
 from .formstext import (
@@ -873,12 +873,17 @@ def register_from_page(session, st, parent: QWidget, on_saved=None) -> None:
             on_saved()
 
     def checked(check, error):
-        warnings = page_check_warnings(check, error, st.source.dpi)
+        warnings = page_check_warnings(check, error, page_dpi(st))
         if not ask(parent, "\n".join([*warnings, tr(formstext.REGISTER_QUESTION)])):
             return
         session.background.run(formstore.load, forms_choice(), callback=forms_loaded)
 
     session.analyzer.call(analysis.check_page, st.result.work, fields, callback=checked)
+
+
+def page_dpi(st) -> float | None:
+    """ページ（解析の結果を持つもの）の解像度（review.with_result_dpi）"""
+    return review.with_result_dpi(st.source, st.result).dpi
 
 
 def page_check_warnings(check, error, source_dpi: float | None) -> list[str]:

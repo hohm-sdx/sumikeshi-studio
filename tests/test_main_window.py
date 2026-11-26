@@ -606,7 +606,7 @@ def test_export_continues_when_analysis_process_ends(window, files, tmp_path):
     class Broken:
         """ページを墨消しする処理を頼むと、解析のプロセスが終わったときと同じエラーになる"""
 
-        def map(self, fn, items):
+        def submit(self, fn, *args):
             raise BrokenProcessPool("解析のプロセスが終わった")
 
         def shutdown(self, **_):
@@ -1663,6 +1663,102 @@ def test_box_with_corners_moves_one_corner_or_whole_and_undoes(window, files):
     click_box(window, box)
     assert not box.active and box.corners == corners
     assert window.undo.index() == done + 1
+
+
+def shift_drag(win, x0, y0, x1, y1, move=True):
+    """Shift を押しながら、ページの座標 (x0, y0) から (x1, y1) までドラッグする（move が False なら押して離すだけ）"""
+    view = win.view
+    p0, p1 = view.mapFromScene(x0, y0), view.mapFromScene(x1, y1)
+    shift = Qt.KeyboardModifier.ShiftModifier
+    QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, shift, p0)
+    if move:
+        QTest.mouseMove(view.viewport(), p1)
+    QTest.mouseRelease(
+        view.viewport(), Qt.MouseButton.LeftButton, shift, p1 if move else p0
+    )
+
+
+def test_corner_drag_moves_one_corner_and_shift_resizes_as_rectangle(window, files):
+    """墨消しの画面では、長方形の範囲も角をドラッグするとその角だけが動き、角のある範囲になる（元に戻すと長方形に
+    戻る）。Shift を押しながら角をドラッグすると、どの範囲も、つかんだ角から最も遠い角を止めた長方形として大きさが
+    変わり、角のある範囲は長方形に戻る。Shift で角を押しただけなら変えない"""
+    open_and_wait(window, [files[0]])
+    view = window.view
+    assert view.move_corners
+    box = first_masked(window)
+    x, y, w, h = box.rect()
+    tol = 1.5 / view._scale()  # 画面の1画素をページの座標にした大きさの前後
+
+    drag(window, x, y, x - 20, y - 10)  # 長方形の範囲の左上の角
+    assert box.corners is not None and box.corners[1:] == (
+        (x + w, y),
+        (x + w, y + h),
+        (x, y + h),
+    )
+    assert abs(box.corners[0][0] - (x - 20)) <= tol
+    assert abs(box.corners[0][1] - (y - 10)) <= tol
+    window.undo.undo()
+    assert box.corners is None and box.rect() == (x, y, w, h)
+
+    shift_drag(
+        window, x, y, x - 20, y - 10
+    )  # 長方形として大きさを変える（右下の角を止める）
+    assert box.corners is None
+    nx, ny, nw, nh = box.rect()
+    assert abs(nx - (x - 20)) <= tol and abs(ny - (y - 10)) <= tol
+    assert abs(nx + nw - (x + w)) <= tol and abs(ny + nh - (y + h)) <= tol
+    window.undo.undo()
+    assert box.rect() == (x, y, w, h)
+
+    corners = ((x, y + 6), (x + w, y), (x + w, y + h), (x, y + h + 6))
+    box.set_geometry(corners)
+    view.refresh_boxes()
+    done = window.undo.index()
+    shift_drag(window, x, y + 6, x, y + 6, move=False)  # 押しただけ
+    assert box.corners == corners and window.undo.index() == done
+    shift_drag(
+        window, x, y + 6, x - 10, y
+    )  # 角のある範囲：最も遠い角（右下）を止めた長方形に戻る
+    assert box.corners is None
+    nx, ny, nw, nh = box.rect()
+    assert abs(nx - (x - 10)) <= tol and abs(ny - y) <= tol
+    assert abs(nx + nw - (x + w)) <= tol and abs(ny + nh - (y + h)) <= tol
+    window.undo.undo()
+    assert box.corners == corners
+
+
+def test_corner_cursor_follows_drag_behavior(window, files):
+    """墨消しの画面の角の上のマウスの形：その角だけを動かすので十字の矢印、Shift を押していれば、長方形として大きさを
+    変える斜めの矢印（左上・右下は ↖↘、右上・左下は ↗↙）。範囲を描く画面と同じ作り（move_corners が False）なら、
+    長方形の範囲の角は斜めの矢印"""
+    from types import SimpleNamespace
+
+    open_and_wait(window, [files[0]])
+    view = window.view
+    box = first_masked(window)
+    item = next(i for i in view.items if i.box is box)
+    x, y, w, h = box.rect()
+    none = Qt.KeyboardModifier.NoModifier
+    shift = Qt.KeyboardModifier.ShiftModifier
+    shapes = Qt.CursorShape
+
+    def cursor(px, py, modifiers):
+        event = SimpleNamespace(
+            pos=lambda: QtCore.QPointF(px, py), modifiers=lambda: modifiers
+        )
+        item.hoverMoveEvent(event)
+        return item.cursor().shape()
+
+    assert cursor(x, y, none) == shapes.SizeAllCursor
+    assert cursor(x, y, shift) == shapes.SizeFDiagCursor
+    assert cursor(x + w, y, shift) == shapes.SizeBDiagCursor
+    assert cursor(x + w / 2, y + h / 2, none) == shapes.PointingHandCursor
+    view.move_corners = False
+    try:
+        assert cursor(x, y, none) == shapes.SizeFDiagCursor
+        assert cursor(x + w, y, none) == shapes.SizeBDiagCursor
+    finally:
+        view.move_corners = True
 
 
 def test_clipped_and_simple_shapes_of_boxes_with_corners():

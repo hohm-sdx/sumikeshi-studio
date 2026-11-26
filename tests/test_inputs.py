@@ -35,6 +35,47 @@ def test_only_first_image_of_multi_picture_jpeg_is_opened(tmp_path):
     assert [(p.index, round(p.dpi)) for p in pages] == [(0, 345)]  # 長辺を A4 とみなす
 
 
+UNOPENED = {
+    "試験_中身がWebP.jpg": "WEBP",
+    "試験_中身がJPEG2000.jpg": "JPEG2000",
+    "試験_中身がAVIF.jpg": "AVIF",
+    "試験_中身がGIF.png": "GIF",
+}
+
+
+@pytest.mark.parametrize("name", sorted(UNOPENED))
+def test_image_of_other_format_is_not_opened_by_its_suffix(name):
+    """中身が JPEG（MPO を含む）・PNG・TIFF・BMP でない画像は、名前の拡張子が .jpg・.png でも開かず、ほかの開けない
+    画像と同じ「画像を開けません」にする（Pillow は中身で形式を決め、WebP・JPEG 2000・AVIF・GIF も開けるため）"""
+    path = DATA / name
+    with Image.open(path) as im:
+        assert (
+            im.format == UNOPENED[name]
+        )  # 中身はその形式（tools/make_test_images.py）
+    with pytest.raises(imaging.InputError, match=rf"^画像を開けません: {name}$"):
+        imaging.open_pages(path)
+
+
+def test_image_replaced_by_other_format_after_opening_is_not_read(tmp_path):
+    """開いた後に、中身が WebP の画像に置き換わったファイルも、解析と出力で読まない（解析の依頼の失敗になり、その
+    ページは「処理できません」になる）"""
+    path = tmp_path / "scan.jpg"
+    Image.new("RGB", (64, 48), "white").save(path, format="JPEG")
+    (page,) = imaging.open_pages(path)
+    path.write_bytes((DATA / "試験_中身がWebP.jpg").read_bytes())
+    with pytest.raises(Exception, match="cannot identify image file"):
+        imaging.render(page)
+
+
+@pytest.mark.parametrize("kind", ["JPEG", "PNG", "TIFF", "BMP"])
+def test_images_of_supported_formats_open(tmp_path, kind):
+    """JPEG・PNG・TIFF・BMP の画像は、拡張子が別の開ける形式のものでも、中身の形式で開く"""
+    path = tmp_path / "scan.png" if kind != "PNG" else tmp_path / "scan.jpg"
+    Image.new("RGB", (64, 48), "white").save(path, format=kind)
+    (page,) = imaging.open_pages(path)
+    assert imaging.render(page).shape == (48, 64, 3)
+
+
 def test_output_paths_avoid_same_name(tmp_path):
     inputs = [Path("a/scan.pdf"), Path("b/scan.pdf"), Path("a/SCAN.jpg"), Path("c.pdf")]
     got = export.output_paths(inputs, tmp_path)
@@ -109,12 +150,13 @@ def test_pdf_resolution_of_inline_form_and_rotated_images(tmp_path):
         with imaging.PDF_LOCK, imaging.open_pdf(f) as pdf:
             page = pdf[0]
             try:
-                measured, _, _ = imaging._pdf_image_px_per_inch(page)
+                measured = imaging._page_parts(page).px_per_in
             finally:
                 page.close()
         assert round(measured, 1) == round(dpi, 1), f.name
     # 描く解像度：インライン画像（40dpi）はページの面積の半分未満なので、下限の200dpi で描く
-    assert [round(p.dpi, 1) for f in expected for p in imaging.open_pages(f)] == [
+    pages = [imaging.resolve(p) for f in expected for p in imaging.open_pages(f)]
+    assert [round(p.dpi, 1) for p in pages] == [
         round(plain, 1),
         round(_px_per_inch(1000, 1400, 297.5, 416.5), 1),
         round(plain, 1),
@@ -195,7 +237,7 @@ def test_pdf_resolution_has_upper_and_lower_bounds(px, size_in, dpi, tmp_path):
     """PDF を描く解像度は600dpi まで。画像がページの面積の半分未満なら200dpi 以上"""
     path = _photo_pdf(tmp_path / "p.pdf", px, (size_in[0] * 72, size_in[1] * 72))
     (p,) = imaging.open_pages(path)
-    assert round(p.dpi) == dpi
+    assert round(imaging.resolve(p).dpi) == dpi
 
 
 def _background_pdf(path: Path, px: tuple[int, int]) -> Path:
@@ -225,7 +267,7 @@ def test_pdf_with_coarse_background_is_drawn_at_least_work_resolution(px, tmp_pa
     """文字や図形のあるページに、ページ全体を覆う粗い背景の画像があっても、下限の200dpi 以上で描く（画像の解像度
     （1.41dpi・70dpi）で描くと、様式不明になるか枠の線が見つからない）"""
     (p,) = imaging.open_pages(_background_pdf(tmp_path / "bg.pdf", px))
-    assert p.dpi == imaging.PDF_MIN_DPI
+    assert imaging.resolve(p).dpi == imaging.PDF_MIN_DPI
     res = pipeline.analyze(p, formset=bundled_forms())
     assert res.form == "扶養控除等申告書"
     assert res.unframed == ()
@@ -242,7 +284,7 @@ def test_pdf_without_images_is_drawn_at_work_resolution(tmp_path):
         ],
     )
     (p,) = imaging.open_pages(path)
-    assert p.dpi == imaging.WORK_DPI
+    assert imaging.resolve(p).dpi == imaging.WORK_DPI
 
 
 def test_export_of_capped_pdf_is_600dpi(tmp_path):
@@ -461,24 +503,154 @@ def test_image_with_different_resolutions_is_made_square(kind, tmp_path):
     assert (res.form, len(res.boxes)) == ("扶養控除等申告書", 10)
 
 
+def test_opening_pdf_does_not_read_page_contents(monkeypatch):
+    """PDF を開く処理（画面とコマンドラインのプロセスで動く）は、ページの中身を読まず（pypdfium2 の get_page。
+    FPDF_LoadPage）、ページの数と大きさだけを読む。解像度は決めず（None）、描くときに imaging.resolve でページの中身
+    から決める（解析のプロセス）。解析の結果も、決めた解像度を持つ"""
+    path = DATA / "試験_画像1枚.pdf"
+    loaded = []
+    real = pdfium.PdfDocument.get_page
+
+    def get_page(self, index):
+        loaded.append(index)
+        return real(self, index)
+
+    monkeypatch.setattr(pdfium.PdfDocument, "get_page", get_page)
+    imaging._pdf_parts.cache_clear()  # 同じプロセスのほかのテストが読んだページの部品を使わない
+    (page,) = imaging.open_pages(path)
+    assert loaded == [] and page.dpi is None and page.zoom == 1.0
+    resolved = imaging.resolve(page)
+    assert loaded == [0] and round(resolved.dpi) == round(1000 / (595 / 72))
+    assert imaging.resolve(resolved) is resolved
+    res = pipeline.analyze(page, formset=())
+    assert res.dpi == resolved.dpi
+    # 開いた結果の大きさは、ページを読んで求めた大きさと同じ（A4 とみなすかの倍率に使う）
+    (rotated,) = imaging.open_pages(DATA / "試験_回転90.pdf")
+    assert (
+        rotated.zoom == 1.0
+        and imaging.render(rotated, 50).shape[1] > imaging.render(rotated, 50).shape[0]
+    )
+
+
+def test_extreme_resolution_ratio_is_not_used(tmp_path):
+    """縦横の解像度の比が ASPECT_MAX（4）を超える記録は、比も解像度も使わず（A4 とみなす）、引き伸ばさない。記録が
+    横60・縦0.1dpi（比600）の 1000画素四方の画像を、引き伸ばすと 1000×600,000画素の配列になる。比が4以内なら
+    引き伸ばす"""
+    path = tmp_path / "ratio.tif"
+    Image.new("L", (1000, 1000), 255).save(path, dpi=(60, 0.1))
+    (page,) = imaging.open_pages(path)
+    assert page.stretch == (1.0, 1.0)
+    assert page.dpi == pytest.approx(1000 / imaging.A4_LONG_IN)
+    assert imaging.render(page).shape[:2] == (1000, 1000)
+    near = tmp_path / "near.tif"
+    Image.new("L", (400, 100), 255).save(near, dpi=(100, 400))
+    (page,) = imaging.open_pages(near)
+    assert page.stretch == (4.0, 1.0) and imaging.render(page).shape[:2] == (100, 1600)
+
+
+def _tiff_with_large_second_page(path: Path, side: int) -> None:
+    """2ページの TIFF の、2ページ目の幅・高さ（と帯の行の数）のタグだけを side に書き換える（ファイルは数百バイト）"""
+    import struct
+
+    Image.new("1", (100, 100), 1).save(
+        path,
+        save_all=True,
+        append_images=[Image.new("1", (100, 100), 0)],
+        compression="group4",
+        dpi=(200, 200),
+    )
+    data = bytearray(path.read_bytes())
+    endian = "<" if data[:2] == b"II" else ">"
+    offsets, off = [], struct.unpack(endian + "I", data[4:8])[0]
+    while off:
+        offsets.append(off)
+        n = struct.unpack(endian + "H", data[off : off + 2])[0]
+        off = struct.unpack(endian + "I", data[off + 2 + 12 * n : off + 6 + 12 * n])[0]
+    second = offsets[1]
+    for i in range(struct.unpack(endian + "H", data[second : second + 2])[0]):
+        e = second + 2 + 12 * i
+        tag, kind = struct.unpack(endian + "HH", data[e : e + 4])
+        if tag in (256, 257, 278):  # 幅・高さ・帯の行の数
+            fmt = "H" if kind == 3 else "I"
+            data[e + 8 : e + 8 + struct.calcsize(fmt)] = struct.pack(endian + fmt, side)
+    path.write_bytes(bytes(data))
+
+
+def test_too_many_pixels_stop_before_making_array(tmp_path, monkeypatch):
+    """配列にする画像の画素の数が MAX_PIXELS を超えるページは、配列を取る前に「画像が大きすぎます」で止める（解析の
+    依頼の失敗になり、そのページは「処理できません」になる。ほかのページは描ける）。複数ページの TIFF の2ページ目
+    （Pillow は開くときに1ページ目だけを見る）と、解像度の比で引き伸ばした後の数にも当てる"""
+    path = tmp_path / "large.tif"
+    _tiff_with_large_second_page(path, 60000)
+    first, second = imaging.open_pages(path)
+    assert imaging.render(first, imaging.WORK_DPI).shape[0] > 0
+    made = []
+    real = np.empty
+
+    def empty(shape, *args, **kwargs):
+        made.append(shape)
+        return real(shape, *args, **kwargs)
+
+    monkeypatch.setattr(imaging.np, "empty", empty)
+    with pytest.raises(
+        imaging.InputError, match=r"画像が大きすぎます（60000×60000画素）"
+    ):
+        imaging.render(second, imaging.WORK_DPI)
+    with pytest.raises(imaging.InputError):
+        pipeline.analyze(second, formset=bundled_forms())
+    assert made == []  # 配列を取る前に止まった
+    # 引き伸ばした後の数：保存された 600×600画素は上限より少ないが、比4で引き伸ばすと上限を超える
+    monkeypatch.setattr(imaging, "MAX_PIXELS", 1_000_000)
+    near = tmp_path / "near.tif"
+    Image.new("L", (600, 600), 255).save(near, dpi=(100, 400))
+    (page,) = imaging.open_pages(near)
+    with pytest.raises(imaging.InputError, match=r"（2400×600画素）"):
+        imaging.render(page)
+
+
 def test_unreadable_page_and_locked_file(tmp_path, monkeypatch):
     """ページを読めない PDF、ほかのソフトが使っているファイル、ないファイルは、理由を分けて示す（読めないフォルダは
-    test_folders）"""
+    test_folders）
+
+    ページの中身を読む（PDFium の FPDF_LoadPage）のは、解析のプロセスでページを描く解像度を決める処理と描く処理
+    だけなので、ページを読めない PDF も開けて、そのページの解析が、PDFium の英語の文でなく、何ページ目を読めないかの
+    文で失敗する。ページの大きさも読めない PDF は、開くときに同じ文で失敗する"""
     good = _inline_image_pdf(tmp_path / "good.pdf")
     bad = _inline_image_pdf(tmp_path / "bad.pdf")
-    real_page = imaging._pdf_page
+    real_get_page = pdfium.PdfDocument.get_page
+    opened = {}
 
-    def broken_page(path, pdf, index):
-        if path.name == "bad.pdf":
+    def get_page(self, index):
+        if opened.get(id(self)) == "bad.pdf":
             raise pdfium.PdfiumError("Failed to load page.")
-        return real_page(path, pdf, index)
+        return real_get_page(self, index)
 
-    monkeypatch.setattr(imaging, "_pdf_page", broken_page)
-    with pytest.raises(
-        imaging.InputError, match="^PDF の1ページ目を読めません: bad.pdf$"
-    ):
+    real_open = imaging._open_pdf
+
+    def open_pdf(path):
+        pdf = real_open(path)
+        opened[id(pdf)] = path.name
+        return pdf
+
+    monkeypatch.setattr(pdfium.PdfDocument, "get_page", get_page)
+    monkeypatch.setattr(imaging, "_open_pdf", open_pdf)
+    (page,) = imaging.open_pages(bad)
+    unreadable = "^PDF の1ページ目を読めません: bad.pdf$"
+    with pytest.raises(imaging.InputError, match=unreadable):
+        imaging.resolve(page)
+    with pytest.raises(imaging.InputError, match=unreadable):
+        imaging.render_pdf_page(bad, 0, 1.0)
+    with pytest.raises(imaging.InputError, match=unreadable):
+        pipeline.analyze(page, formset=bundled_forms())
+    (page,) = imaging.open_pages(good)
+    assert imaging.resolve(page).dpi > 0
+
+    def no_size(*args):
+        return False
+
+    monkeypatch.setattr(imaging.pdfium_c, "FPDF_GetPageSizeByIndexF", no_size)
+    with pytest.raises(imaging.InputError, match=unreadable):
         imaging.open_pages(bad)
-    assert len(imaging.open_pages(good)) == 1
 
     with pytest.raises(
         imaging.InputError, match="^ファイルが見つかりません: none.pdf$"

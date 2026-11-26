@@ -23,14 +23,13 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from . import formstore
 from .formstore import (
     MAX_IMAGE_BYTES,
-    MAX_IMAGE_SIDE,
     TEMPLATE_SCALE,
     Field,
     FormError,
     FormSpec,
-    png_size,
 )
 from .i18n import tr
 
@@ -95,39 +94,53 @@ def _template_image(spec: FormSpec) -> tuple:
     path = spec.image_path()
     key = (str(path), spec.revision, spec.updated_at, spec.updated_by)
     if key not in _loaded:
-        try:
-            if path.stat().st_size > MAX_IMAGE_BYTES:  # 大きすぎる画像は読まない
-                raise FormError(
-                    tr(
-                        "様式「{name}」の見本の画像が大きすぎます。（{path}）",
-                        name=spec.name,
-                        path=path,
-                    )
-                )
-            raw = path.read_bytes()
-        except OSError as e:
+        image = read_template_image(spec)
+        kp, desc = orb().detectAndCompute(image, None)
+        _loaded[key] = (image, kp, desc)
+    return _loaded[key]
+
+
+def read_template_image(spec: FormSpec) -> np.ndarray:
+    """様式の見本の画像（TEMPLATE_SCALE の解像度、グレー）を読む。読めなければ FormError
+
+    様式の一覧を読むときに最後まで確かめた画像でも、その後に置き換わることがあるので、読むたびに、ファイルの大きさを
+    確かめ、読んだ同じバイト列を PNG として最後まで確かめてから（formstore.check_png）OpenCV に渡す（PNG でない画像を、
+    OpenCV の中のほかの形式の部品に渡さないため。展開すると大きくなる画像を OpenCV で展開すると、数十秒かかるため）"""
+    path = spec.image_path()
+    try:
+        if path.stat().st_size > MAX_IMAGE_BYTES:  # 大きすぎる画像は読まない
             raise FormError(
                 tr(
-                    "様式「{name}」の見本の画像を読めません。（{path}）",
-                    name=spec.name,
-                    path=path,
-                )
-            ) from e
-        wh = png_size(raw[:24])
-        image = None
-        if wh is not None and max(wh) <= MAX_IMAGE_SIDE:
-            image = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_GRAYSCALE)
-        if image is None:
-            raise FormError(
-                tr(
-                    "様式「{name}」の見本の画像を、画像として読めません。（{path}）",
+                    "様式「{name}」の見本の画像が大きすぎます。（{path}）",
                     name=spec.name,
                     path=path,
                 )
             )
-        kp, desc = orb().detectAndCompute(image, None)
-        _loaded[key] = (image, kp, desc)
-    return _loaded[key]
+        raw = path.read_bytes()
+    except OSError as e:
+        raise FormError(
+            tr(
+                "様式「{name}」の見本の画像を読めません。（{path}）",
+                name=spec.name,
+                path=path,
+            )
+        ) from e
+    image = None
+    try:
+        formstore.check_png(raw)
+    except formstore.PngError:
+        pass
+    else:
+        image = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        raise FormError(
+            tr(
+                "様式「{name}」の見本の画像を、画像として読めません。（{path}）",
+                name=spec.name,
+                path=path,
+            )
+        )
+    return image
 
 
 def orb():

@@ -14,6 +14,7 @@ move_ranges・line_match_default・check_page・read_title だけ（出力の墨
 
 import os
 import signal
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -35,6 +36,12 @@ class AnalysisJob:
     # 使う様式（この PC で使わない様式を除いたもの）。1回の「開く」の中では、同じ組で解析する
     formset: tuple[FormSpec, ...]
     retried: bool = False  # 解析のプロセスが途中で終わったため、やり直している
+    # ほかの依頼と同時に動かさない（解析のプロセスが途中で終わったときに、このページが原因かを確かめるため）
+    alone: bool = False
+
+
+# Windows の例外で解析のプロセスを終わらせるときの終了の番号
+NATIVE_EXCEPTION_EXIT = 3
 
 
 def call_in(language: str, fn, *args):
@@ -42,21 +49,63 @@ def call_in(language: str, fn, *args):
 
     解析のプロセスで作る文（ページの注記、様式を保存する前の確認の文など）を、画面のプロセスと同じ言語にするため、
     workers.Analyzer は解析のプロセスへの依頼をすべてこれで包み、依頼を出す時の言語を渡す。
+    fn が、Windows の例外から作られた OSError（native_exception）を出したら、異常終了の記録に書いて、このプロセスを
+    終わらせる（呼んだ側には、解析のプロセスが途中で終わったことが届き、ほかの異常終了と同じに扱う）。
     """
     from . import i18n
 
     i18n.set_language(language)
-    return fn(*args)
+    try:
+        return fn(*args)
+    except OSError as e:
+        if native_exception(e):
+            _end_by_native_exception(e)
+        raise
+
+
+def native_exception(e: BaseException) -> bool:
+    """e が、Windows の ctypes が、C の関数の中で起きた例外（C++ の例外 0xE06D7363・アクセス違反など）を受け止めて作った
+    OSError か
+
+    ctypes は、決まった種類（アクセス違反など）を「exception: …」の文の OSError（winerror なし）に、それ以外を、例外の
+    番号を winerror にした OSError（番号は負の数になる）にする。ふつうの OSError（ファイルを読めない、アクセスが拒否された
+    など）は、winerror が正の数か None で、文が「exception: 」で始まらない。
+    """
+    if not isinstance(e, OSError):
+        return False
+    winerror = getattr(e, "winerror", None)
+    if winerror is not None:
+        return winerror < 0
+    return str(e).startswith("exception: ")
+
+
+def _end_by_native_exception(e: OSError) -> None:
+    """Windows の例外を受けた解析のプロセスを終わらせる。例外が PDFium などの C の関数の中を戻るとき、途中で取った
+    メモリや状態は後始末されずに残り、同じプロセスでの後の処理が、メモリの上限に届いて失敗することがあるので、同じ
+    プロセスで続けない"""
+    from . import crashlog
+
+    crashlog.write_exception(
+        "Windows exception in a native call (ending the analysis process)",
+        type(e),
+        e,
+        e.__traceback__,
+    )
+    crashlog.flush()
+    os._exit(NATIVE_EXCEPTION_EXIT)
 
 
 def configure(threads: int) -> None:
-    """解析のプロセスを立ち上げるときの設定：異常終了の記録と、OCR のスレッドの数（解析のプロセスが複数の
-    ときは分ける）"""
-    from . import crashlog, ocr
+    """解析のプロセスを立ち上げるときの設定：異常終了の記録、確保できるメモリの上限（Windows のジョブ）と、OCR の
+    スレッドの数（解析のプロセスが複数のときは分ける）"""
+    from . import crashlog, ocr, winjob
 
     crashlog.setup(
         crashlog.ROLE_ANALYSIS
     )  # pythonw.exe から起動するので、エラーの出力がない
+    # 確保できるメモリを限る（Windows）。細工した PDF で PDFium が部品を展開し続けても、PC 全体の空きを使い切らない
+    if (reason := winjob.limit_memory()) and sys.platform == "win32":
+        crashlog.write(f"memory limit: {reason}")
     # コマンドラインから出力するとき、コンソールの Ctrl+C は同じコンソールの解析のプロセスにも届く。止めるかどうかは
     # 呼んだプロセスが決める（解析のプロセスが先に終わると、解析中のページが「途中で終了しました」になるため）
     signal.signal(signal.SIGINT, signal.SIG_IGN)

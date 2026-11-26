@@ -15,15 +15,24 @@ def read(path: Path) -> str:
 
 
 def test_version_text_reads_version_file(tmp_path, monkeypatch):
-    """配布用パッケージでは、python フォルダの隣の version.txt から作った日時を読む"""
+    """配布用パッケージでは、python フォルダの隣の version.txt から作った日を読む。前の形の、時刻も書いた
+    version.txt も読める"""
     python = tmp_path / "python"
     python.mkdir()
     monkeypatch.setattr(sys, "base_prefix", str(python))
     assert version.version_text() == f"{__version__} (no version.txt)"
     (tmp_path / "version.txt").write_text(
+        f"Sumikeshi Studio {__version__}\r\nBuilt: 2026-11-24\r\n", "utf-8-sig"
+    )
+    assert version.version_text() == f"{__version__} (built 2026-11-24)"
+    (tmp_path / "version.txt").write_text(
         f"Sumikeshi Studio {__version__}\r\nBuilt: 2026-11-08 08:10\r\n", "utf-8-sig"
     )
     assert version.version_text() == f"{__version__} (built 2026-11-08 08:10)"
+    (tmp_path / "version.txt").write_text(
+        f"Sumikeshi Studio {__version__}\r\n", "utf-8-sig"
+    )
+    assert version.version_text() == f"{__version__} (no build time in version.txt)"
 
 
 def test_setup_removes_other_language_shortcut():
@@ -52,7 +61,7 @@ def test_command_line_bat_runs_cli_in_console():
     """コマンドラインからの出力の .bat は、コンソールのある python.exe で cli を呼び（start を使わずに終わるまで待つ）、
     引数を渡し、終了の番号を返す。ファイルなどに書き出したときも UTF-8 にする（-X utf8）。-I で起動する。
     改行は CRLF（Windows のコマンドプロンプトで読むため）"""
-    data = (ROOT / "windows" / "sumikeshi.bat").read_bytes()
+    data = (ROOT / "windows" / "sumikeshi-cli.bat").read_bytes()
     assert data.count(b"\n") == data.count(b"\r\n") > 0
     lines = data.decode("ascii").splitlines()
     run = '"%~dp0python\\python.exe" -I -X utf8 -m sumikeshi_studio.cli %*'
@@ -65,14 +74,15 @@ def test_bat_files_start_python_isolated():
     ある同じ名前のモジュールや、PC の PYTHONPATH などの環境変数を読み込まない）"""
     calls = []
     for path in sorted((ROOT / "windows").glob("**/*.bat")):
-        for line in path.read_text("ascii").splitlines():
+        # .bat は ASCII と、PowerShell が見つからないときの日本語の文の1行（CP932）
+        for line in path.read_text("cp932").splitlines():
             for exe in ("python.exe", "pythonw.exe"):
                 at = line.lower().find(exe)
                 if at >= 0:
                     after = line[at + len(exe) :].lstrip('"').split()
                     calls.append((path.relative_to(ROOT).as_posix(), after[:1]))
     assert {p for p, _ in calls} >= {
-        "windows/sumikeshi.bat",
+        "windows/sumikeshi-cli.bat",
         "windows/start.bat",
     }
     assert [c for c in calls if c[1] != ["-I"]] == []

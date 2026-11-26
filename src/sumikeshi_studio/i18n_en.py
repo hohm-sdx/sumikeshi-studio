@@ -32,7 +32,7 @@ EN: dict[str | tuple[str, str], str | tuple[str, str]] = {
         "Could not open {what} ({folder}). Check that you are connected to the shared folder."
     ),
     # ---- version
-    "バージョン {version}（{made} 作成）": "Version {version} (built {made})",
+    "バージョン {version}": "Version {version}",
     "バージョン {version}（開発用の環境）": "Version {version} (development environment)",
     # ---- crashlog
     "前回の起動で、ツールが閉じる操作をしないまま終わりました（ウィンドウが急に消えた場合など）。\n"
@@ -376,6 +376,7 @@ EN: dict[str | tuple[str, str], str | tuple[str, str]] = {
     "この種類のファイルは開けません: {name}": "This type of file cannot be opened: {name}",
     "ページがありません: {name}": "The file has no pages: {name}",
     "PDF の{page}ページ目を読めません: {name}": "Cannot read page {page} of the PDF: {name}",
+    "画像が大きすぎます（{width}×{height}画素）": "The image is too large ({width} × {height} pixels)",
     "画像を開けません: {name}": "Cannot open the image: {name}",
     "PDFを開けません（壊れている可能性があります）: {name}": "Cannot open the PDF (it may be broken): {name}",
     "パスワード付きのPDFは開けません: {name}": "Password-protected PDFs cannot be opened: {name}",
@@ -502,7 +503,9 @@ EN: dict[str | tuple[str, str], str | tuple[str, str]] = {
     "何もない所をドラッグ": "Drag on an empty spot",
     "範囲を追加する": "Add an area",
     "枠の角をドラッグ": "Drag a corner of a frame",
-    "大きさを変える": "Resize",
+    "その角だけを動かす": "Move only that corner",
+    "Shift+枠の角をドラッグ": "Shift+drag a corner of a frame",
+    "長方形として大きさを変える": "Resize as a rectangle",
     "枠の中をドラッグ": "Drag inside a frame",
     "動かす": "Move",
     "手で追加した範囲を右クリック": "Right-click a manually added area",
@@ -515,7 +518,7 @@ EN: dict[str | tuple[str, str], str | tuple[str, str]] = {
     "前・次のページに移る": "Go to the previous or next page",
     "Ctrl+Z・Ctrl+Y": "Ctrl+Z, Ctrl+Y",
     "元に戻す・やり直す": "Undo, redo",
-    "Ctrl+0・Ctrl++・Ctrl+-": "Ctrl+0, Ctrl++, Ctrl+-",
+    "Ctrl+0・Ctrl++・Ctrl+-・Ctrl+ホイール": "Ctrl+0, Ctrl++, Ctrl+-, Ctrl+wheel",
     "全体を表示・拡大・縮小": "Fit to window, zoom in, zoom out",
     "墨消しPDFを出力": "Export redacted PDF",
     "{label}（{count}件）": ("{label} ({count} file)", "{label} ({count} files)"),
@@ -743,9 +746,6 @@ EN: dict[str | tuple[str, str], str | tuple[str, str]] = {
     "削除": "Delete",
     "新しい様式を登録": "Register new form",
     "保存したツール：{version}": "Saved with: {version}",
-    "様式「{name}」の見本の画像を、画像として読めません": (
-        'The sample image of the form "{name}" cannot be read as an image'
-    ),
     "様式のフォルダを読んでいます。": "Reading the forms folder.",
     "様式のフォルダがありません。": "There is no forms folder.",
     "見本の画像を読んでいます…": "Reading the sample image…",
@@ -966,8 +966,8 @@ EN: dict[str | tuple[str, str], str | tuple[str, str]] = {
         "Replace it with a scan of a document without entries.\nContinue replacing?"
     ),
     # ---- cli（コマンドラインからの出力。画面を出さない）
-    "使い方：<入力のファイル・フォルダ> … --out <出力のフォルダ> [--depth <数> | --recursive] [--overwrite] "
-    "[--forms <様式のフォルダ>] [--language ja|en]\n"
+    "使い方：sumikeshi-cli.bat <入力のファイル・フォルダ> … --out <出力のフォルダ> [--depth <数> | --recursive] "
+    "[--overwrite] [--forms <様式のフォルダ>] [--language ja|en]\n"
     "スキャンした帳票の PDF・画像を、画面を出さずに解析し、様式で決めた欄を墨消しした PDF"
     "（元の名前_redacted.pdf）を出力します。\n"
     "　　<入力のファイル・フォルダ>　PDF・画像のファイルか、フォルダ（フォルダは、直下の PDF・画像を開きます）\n"
@@ -983,8 +983,8 @@ EN: dict[str | tuple[str, str], str | tuple[str, str]] = {
     "そのページを知らせます。出力した後に、そのページを確かめてください。\n"
     "終了の番号：0 すべてのファイルを出力した、1 出力しなかったファイルがある、2 処理を始められなかった、"
     "3 途中で止めた": (
-        "Usage: <input files or folders> ... --out <output folder> [--depth <number> | --recursive] [--overwrite] "
-        "[--forms <forms folder>] [--language ja|en]\n"
+        "Usage: sumikeshi-cli.bat <input files or folders> ... --out <output folder> [--depth <number> | --recursive] "
+        "[--overwrite] [--forms <forms folder>] [--language ja|en]\n"
         "Analyzes scanned PDF and image files of documents without the screen, and exports PDFs in which the fields "
         "defined in the forms are redacted (original name_redacted.pdf).\n"
         "    <input files or folders>  PDF or image files, or folders (for a folder, the PDF and image files directly "
@@ -1028,6 +1028,10 @@ EN: dict[str | tuple[str, str], str | tuple[str, str]] = {
         "[{index}/{total}] {name} ({count} pages)",
     ),
     "　　{number}ページ目を解析しました（{done}／{pages}）": "    Analyzed page {number} ({done}/{pages})",
+    "　　{number}ページ目は処理できません（{done}／{pages}）": "    Page {number} failed ({done}/{pages})",
+    "{pages}ページ目の解析で、解析のプロセスが途中で終了しました。": (
+        "Pages on which the analysis process ended unexpectedly: {pages}."
+    ),
     "　　✓ {out}　墨消しした範囲：{count}か所": (
         "    ✓ {out}  {count} area redacted",
         "    ✓ {out}  {count} areas redacted",
@@ -1061,22 +1065,23 @@ EN: dict[str | tuple[str, str], str | tuple[str, str]] = {
         "components that the tool uses. As it is, the tool will not start or will stop partway."
     ),
     "Windows のスマート アプリ コントロール（または会社のアプリケーション制御）が、"
-    "ツールが使わない次の部品を止めました。ツールの動きには影響しません。": (
+    "次の部品を止めました。解析と出力では使わない部品なので、ツールの動作には影響しない見込みです。": (
         "Windows Smart App Control (or your organization's application control) blocked the following "
-        "components that the tool does not use. This does not affect how the tool works."
+        "components. These components are not used for analysis or export, so the tool is expected to work "
+        "normally."
     ),
     "Windows のスマート アプリ コントロール（または会社のアプリケーション制御）が、"
-    "ツールの部品（{name}）を止めました。配布用パッケージの ZIP を展開して setup.bat を実行すると、"
+    "ツールの部品（{name}）を止めました。配布用パッケージの ZIP を展開して install.bat を実行すると、"
     "止められた部品の名前が出ます。": (
         "Windows Smart App Control (or your organization's application control) blocked a component of "
-        "the tool ({name}). Extract the ZIP of the package and run setup.bat to see the names of the blocked "
+        "the tool ({name}). Extract the ZIP of the package and run install.bat to see the names of the blocked "
         "components."
     ),
     "Windows のスマート アプリ コントロール（または会社のアプリケーション制御）が、"
-    "ツールの部品を止めました。配布用パッケージの ZIP を展開して setup.bat を実行すると、"
+    "ツールの部品を止めました。配布用パッケージの ZIP を展開して install.bat を実行すると、"
     "止められた部品の名前が出ます。": (
         "Windows Smart App Control (or your organization's application control) blocked a component of "
-        "the tool. Extract the ZIP of the package and run setup.bat to see the names of the blocked components."
+        "the tool. Extract the ZIP of the package and run install.bat to see the names of the blocked components."
     ),
     "Windows ではないため、確かめません": "Not checked, because this is not Windows",
     "ツールの部品は、すべて読み込めました。": "All components of the tool could be loaded.",

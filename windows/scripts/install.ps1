@@ -6,6 +6,7 @@
 # このスクリプトは展開したフォルダの scripts\ にあり、展開したフォルダ（.bat のあるフォルダ）は -Source で受け取る。
 # すべてのユーザー向けでは、管理者権限でこのスクリプトを起動し直す（-Elevated）。管理者権限の段階は、UAC で入力した
 # 管理者のアカウントとして動くことがあるので、利用者ごとのこと（サンプルの様式・設定・その利用者のデスクトップ）はしない。
+# 前のインストールが見つかれば、種類は尋ねずに同じ種類で更新する。
 # 問いの答えは引数でも渡せる（-Kind・-Samples。試験で人の操作なしに流すため）。渡さなかった問いは尋ねる。
 param(
     [Parameter(Mandatory = $true)][string]$Source,
@@ -79,6 +80,21 @@ function Get-InstalledFolder([string]$Path) {
         }
     }
     return $null
+}
+
+# 配布用パッケージの、展開したフォルダの直下にあるもの
+$PackageItems = @("install.bat", "uninstall.bat", "start.bat", "sumikeshi-cli.bat", "scripts", "python", "licenses", "README-ja.txt", "README-en.txt", "version.txt")
+
+# ドライブの直下（E:\ や \\server\share）か。末尾の \ を除いた「E:」は、PowerShell ではそのドライブの今の場所を指すので、
+# 移す・消す処理がドライブの中身に及ぶ
+function Test-DriveRoot([string]$Path) {
+    return $Path.EndsWith(":") -or ([IO.Path]::GetPathRoot($Path)).TrimEnd("\") -eq $Path
+}
+
+# 展開したフォルダの直下にある、配布用パッケージにないものの名前（隠しファイルも含む）。自分だけのインストールは
+# 展開したフォルダごと移すか消すので、利用者のファイルがあれば、一緒に移したり消したりしてしまう
+function Get-ForeignItems([string]$Path) {
+    return @(Get-ChildItem -LiteralPath $Path -Force -Name | Where-Object { $_ -notin $PackageItems })
 }
 
 # ネットワーク上のフォルダ（UNC パスか、割り当てたネットワークのドライブ）か
@@ -305,6 +321,29 @@ function Invoke-Python([string]$Exe, [string[]]$Arguments) {
 }
 
 # ---------------------------------------------------------------- 始めの確認と、種類の選び方
+# このアカウントから見た、前のインストールの種類（"1"：自分だけ、"2"：すべてのユーザー向け）。どちらもないときと、
+# 両方あるときは空（種類を尋ね、選んだ種類の確かめで止める）
+function Get-InstalledKind {
+    $PerUser = (Test-Path "HKCU:\$UninstallKey") -or (Test-Path -LiteralPath $PerUserDir)
+    $AllUsers = (Test-Path "HKLM:\$UninstallKey") -or (Test-Path -LiteralPath $AllUsersDir)
+    if ($PerUser -and -not $AllUsers) { return "1" }
+    if ($AllUsers -and -not $PerUser) { return "2" }
+    return ""
+}
+
+# 種類の答え。前のインストールが見つかれば、尋ねずに同じ種類で更新し、そのことを1行出す。-Kind が見つかった種類と
+# 違えば、-Kind のまま返す（選んだ種類の確かめで、何も変えずに止まる）。空なら尋ねる
+function Get-KindAnswer {
+    $Installed = Get-InstalledKind
+    if (-not $Installed -or ($Kind -and $Kind -ne $Installed)) { return $Kind }
+    if ($Installed -eq "1") {
+        Write-Host (Msg "このアカウントには自分だけの墨消しスタジオがあるので、同じ種類で更新します。" "Sumikeshi Studio is installed just for this account, so it is updated with the same type of installation.")
+    } else {
+        Write-Host (Msg "すべてのユーザー向けにインストールされているので、同じ種類で更新します。" "Sumikeshi Studio is installed for all users, so it is updated with the same type of installation.")
+    }
+    return $Installed
+}
+
 function Invoke-Main {
     if (-not (Test-Choice "Kind" $Kind @("1", "2"))) { return }
     if (-not (Test-Choice "Samples" $Samples @("y", "n"))) { return }
@@ -312,7 +351,18 @@ function Invoke-Main {
     if (-not (Test-Choice "WindowsLanguage" $WindowsLanguage @("ja", "en"))) { return }
     # 導入したフォルダの中から実行すると、移すものと入れる先が重なり、入れたばかりのフォルダを消すおそれがある
     if (Get-InstalledFolder $Source) {
-        Write-Host ((Msg "インストールしたフォルダ（{0}）の中からは、インストールできません。配布用パッケージの ZIP を展開したフォルダの setup.bat を実行してください。" "Setup cannot be run from the installed folder ({0}). Run setup.bat in the folder where you extracted the ZIP of the package.") -f $Source)
+        Write-Host ((Msg "インストールしたフォルダ（{0}）の中からは、インストールできません。配布用パッケージの ZIP を展開したフォルダの install.bat を実行してください。" "Setup cannot be run from the installed folder ({0}). Run install.bat in the folder where you extracted the ZIP of the package.") -f $Source)
+        return
+    }
+    if (Test-DriveRoot $Source) {
+        Write-Host (Msg "ZIP を新しいフォルダに展開し直して、その中の install.bat を実行してください（ドライブの直下からはインストールできません）。" "Extract the ZIP again into a new folder and run install.bat in it (setup cannot be run from the root of a drive).")
+        return
+    }
+    $Foreign = Get-ForeignItems $Source
+    if ($Foreign.Count -gt 0) {
+        $Names = ($Foreign | Select-Object -First 3) -join ", "
+        if ($Foreign.Count -gt 3) { $Names += ", …" }
+        Write-Host ((Msg "ZIP を新しいフォルダに展開し直して、その中の install.bat を実行してください（展開したフォルダに、配布用パッケージにないもの（{0}）があります）。" "Extract the ZIP again into a new folder and run install.bat in it (the extracted folder contains items that are not part of the package: {0}).") -f $Names)
         return
     }
     $Python = Join-Path $Source "python\python.exe"
@@ -343,7 +393,7 @@ function Invoke-Main {
     if ($Code -eq 20) { return }
     if ($Code -ne 0 -and $Code -ne 10) { Write-Host ((Msg "部品を確かめられませんでした（終了の番号 {0}）。インストールは続けます。" "Could not check the components (exit code {0}). Setup continues.") -f $Code) }
 
-    $Choice = $Kind
+    $Choice = Get-KindAnswer
     while ($Choice -notin @("1", "2")) {
         Write-Host (Msg "インストールの種類を選んでください。" "Choose the type of installation.")
         Write-Host (Msg "  1：自分だけ（このアカウントだけが使えます。管理者権限は要りません）" "  1: Just for me (only this account can use it; no administrator rights needed)")
@@ -353,7 +403,7 @@ function Invoke-Main {
     }
     if ($Choice -eq "1") {
         if (Test-Elevated) {
-            Write-Host (Msg "管理者として実行されているため、自分だけのインストールはできません。setup.bat を、右クリックの「管理者として実行」でなく、ダブルクリックで実行してください。" "Just-for-me installation cannot be done because setup is running as administrator. Run setup.bat by double-clicking it, not with `"Run as administrator`".")
+            Write-Host (Msg "管理者として実行されているため、自分だけのインストールはできません。install.bat を、右クリックの「管理者として実行」でなく、ダブルクリックで実行してください。" "Just-for-me installation cannot be done because setup is running as administrator. Run install.bat by double-clicking it, not with `"Run as administrator`".")
             return
         }
         if ((Test-Path "HKLM:\$UninstallKey") -or (Test-Path -LiteralPath $AllUsersDir)) {
@@ -379,7 +429,7 @@ function Invoke-Main {
         $Arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"", "-Source", "`"$Source`"", "-Elevated", "-Language", $Lang, "-WindowsLanguage", $WinLang)
         if ($NoWait) { $Arguments += "-NoWait" }
         try {
-            $Process = Start-Process -FilePath "powershell.exe" -ArgumentList $Arguments -Verb RunAs -Wait -PassThru
+            $Process = Start-Process -FilePath (Join-Path $PSHOME "powershell.exe") -ArgumentList $Arguments -Verb RunAs -Wait -PassThru
         } catch {
             Write-Host (Msg "管理者権限での実行が取り消されたため、インストールしませんでした。" "Setup was not done because running with administrator rights was canceled.")
             return

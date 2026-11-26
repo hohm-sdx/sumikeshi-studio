@@ -1544,7 +1544,11 @@ def test_sources_start_with_copyright_and_license():
                 or "__pycache__" in path.parts
             ):
                 continue
-            lines = path.read_bytes().decode("utf-8-sig").splitlines()
+            # .bat は ASCII と、PowerShell が見つからないときの日本語の文の1行（CP932。cmd がコンソールの文字コードで読むため）
+            data = path.read_bytes()
+            lines = data.decode(
+                "cp932" if path.suffix == ".bat" else "utf-8-sig"
+            ).splitlines()
             bat = path.suffix == ".bat"
             head = lines[1:3] if bat else lines[:2]
             prefix = "rem " if bat else "# "

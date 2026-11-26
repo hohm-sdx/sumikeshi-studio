@@ -14,7 +14,7 @@ Linux でも Windows でも作れる。作るときはインターネットに�
 4. すべての .exe・.dll・.pyd の署名を osslsigncode で検証し、決まり（SIGNERS・UNSIGNED）から外れたら止める。
    署名した証明書の失効は、署名の中の証明書の CRL の配布先から make_dist が CRL を取って確かめる
 5. windows/ の導入用のファイルを、フォルダの配置のまま加え（入口の .bat は一番上、PowerShell のスクリプトは scripts\\）、
-   version.txt（バージョン・作った日時・元のコミット・公開のソースの場所・Python と PDFium のバージョン。--public の
+   version.txt（バージョン・作った日・元のコミット・公開のソースの場所・Python と PDFium のバージョン。--public の
    ときは元のコミットを書かない）を書き、
    README-ja.txt・README-en.txt の最長のパスの数を書き込み、
    dist/sumikeshi-studio-<バージョン>-<日付>-win64.zip にまとめる
@@ -104,7 +104,7 @@ PRODUCT = (
 # パスが長いため除く。見本のスキャンの解析・出力と確認画面で読み込まれる810個のモジュールに、
 # これらの中のものはなかった
 # RapidOCR の推論の部分のうち、onnxruntime のほかのもの（PyTorch・Paddle など）も、ツールは使わない
-# （その種類を選んだときだけ読み込む作り）。PyTorch の部分は、setup.bat で .pyc に変換するときに
+# （その種類を選んだときだけ読み込む作り）。PyTorch の部分は、install.bat で .pyc に変換するときに
 # SyntaxWarning（"\d" is an invalid escape sequence）を出す（配布物の .py の中で唯一）
 RAPIDOCR_ENGINES = "rapidocr/inference_engine"
 SITE_UNUSED_DIRS = [
@@ -988,10 +988,11 @@ def public_commit_problem(commit: str) -> str | None:
 
 
 def version_file_text(stamp: datetime, site: Path, commit: str | None) -> str:
-    """配布用パッケージの version.txt の中身（中身は英語。作った日時の行は、version.made_at が MADE_PREFIX で探す）。
+    """配布用パッケージの version.txt の中身（中身は英語。作った日の行は、version.made_at が MADE_PREFIX で探す。
+    日付は ZIP の名前と同じ stamp から決め、時刻は書かない）。
     commit が None（公開用のパッケージ）なら、Commit の行を書かない"""
     return (
-        f"{PRODUCT} {__version__}\r\n{MADE_PREFIX}{stamp:%Y-%m-%d %H:%M}\r\n"
+        f"{PRODUCT} {__version__}\r\n{MADE_PREFIX}{stamp:%Y-%m-%d}\r\n"
         + (f"{COMMIT_PREFIX}{commit}\r\n" if commit is not None else "")
         + f"{SOURCE_PREFIX}{PUBLIC_REPOSITORY} (tag v{__version__})\r\n"
         f"Python: {PYTHON_FILE} (python.org)\r\n{pdfium_line(site)}\r\n"

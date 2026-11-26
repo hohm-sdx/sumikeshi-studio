@@ -284,6 +284,39 @@ def test_check_page_finds_distorted_images():
     assert spread >= formcheck.DISTORT_SPREAD and formcheck.distorted(keystone)
 
 
+def test_line_angle_spread_is_same_with_16_bit_labels(monkeypatch):
+    """線の傾きのばらつきは、かたまりの番号を16ビットで求めても、32ビットで求めたときと同じ値になる（スキャンに
+    見立てたページと、台形に写した用紙）。番号が16ビットに収まらない画像（短い横の線を敷き詰めたもの）では、
+    32ビットで求め直して同じ値になる"""
+    page = page_image("2026bun_04")
+    h, w = page.shape
+    src = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    dst = np.float32([[0.04 * w, 0], [0.96 * w, 0], [w, h], [0, h]])
+    keystone = cv2.warpPerspective(
+        page, cv2.getPerspectiveTransform(src, dst), (w, h), borderValue=255
+    )
+    dashes = np.full((3600, 4000), 255, np.uint8)
+    for y in range(40, 3560, 2):
+        for x in range(40 + (y % 4) * 10, 3900, formcheck.DISTORT_RUN + 10):
+            dashes[y, x : x + formcheck.DISTORT_RUN + 4] = 0
+    dashes[1500:1503, 100:3900] = 0  # 長い横の線（傾きを測る線）
+    dashes[2500:2503, 100:3900] = 0
+    images = [page, keystone, dashes]
+    got = [formcheck.line_angle_spread(img) for img in images]
+    counts = []
+
+    def labels32(mask):
+        _, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        counts.append(len(stats))
+        assert labels.dtype == np.int32
+        return labels, stats
+
+    monkeypatch.setattr(rulings, "components", labels32)
+    assert [formcheck.line_angle_spread(img) for img in images] == got
+    assert max(counts) > 65535  # 敷き詰めた線の画像は、16ビットに収まらない
+    assert got[1] >= formcheck.DISTORT_SPREAD > got[0]
+
+
 def test_written_ranges_find_entries_inside_ranges():
     """記入の見分け：扶養控除等申告書の個人番号欄に架空の番号を書いたページでは、番号を書いた範囲を、記入のある範囲と
     みる。記入のない公開様式と、白黒2値の公開様式では、どの範囲も記入とみない。範囲を描く画面を開く前の確かめ
